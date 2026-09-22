@@ -9,26 +9,32 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Карта изменена на массив текстовых строк, чтобы маркдаун её не стирал.
-// '1' = стена, '0' = свободный проход. Коридорный лабиринт 16x16.
-const MAP = [
-  "1111111111111111",
-  "1000001000000001",
-  "1011001011111001",
-  "1010000010001001",
-  "1010111110101001",
-  "1000100000100001",
-  "1010101110111101",
-  "1010001000000101",
-  "1011111011110101",
-  "1000000010010001",
-  "1111010110111101",
-  "1001010000000101",
-  "1001011111110101",
-  "1000000000010001",
-  "1011111111011101",
-  "1111111111111111"
-];
+// Надежный текстовый слепок оригинальной цифровой карты. Маркдаун его не сожрет.
+const IMMUNE_MAP_DATA = `
+  {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+  {1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1},
+  {1,0,1,1,0,0,1,0,1,1,1,1,1,0,0,1},
+  {1,0,1,0,0,0,0,0,1,0,0,0,1,0,0,1},
+  {1,0,1,0,1,1,1,1,1,0,1,0,1,0,0,1},
+  {1,0,0,0,1,0,0,0,0,0,1,0,0,0,0,1},
+  {1,0,1,0,1,0,1,1,1,0,1,1,1,1,0,1},
+  {1,0,1,0,0,0,1,0,0,0,0,0,0,1,0,1},
+  {1,0,1,1,1,1,1,0,1,1,1,1,0,1,0,1},
+  {1,0,0,0,0,0,0,0,1,0,0,1,0,0,0,1},
+  {1,1,1,1,0,1,0,1,1,0,1,1,1,1,0,1},
+  {1,0,0,1,0,1,0,0,0,0,0,0,0,1,0,1},
+  {1,0,0,1,0,1,1,1,1,1,1,1,0,1,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1},
+  {1,0,1,1,1,1,1,1,1,1,0,1,1,1,0,1},
+  {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+`;
+
+// Превращаем фигурные скобки обратно в нативный двухмерный числовой массив JavaScript
+const MAP = IMMUNE_MAP_DATA.trim().split('\n').map(row => {
+  const cleanRow = row.replace(/\{|\}/g, '').trim();
+  if (!cleanRow) return null;
+  return cleanRow.split(',').map(char => parseInt(char.trim()));
+}).filter(row => row !== null);
 
 const SPAWNS = [
   { x: 2.5, y: 1.5 }, { x: 13.5, y: 1.5 },
@@ -50,9 +56,7 @@ const medkits = [
   { id: 'm4', x: 12.5, y: 11.5, active: true }
 ];
 
-// Ровно 1 экземпляр РПГ на карте
 let rpgWeapon = { id: 'rpg_pickup', x: 7.5, y: 5.5, active: true };
-
 const players = {};
 
 function randomSpawn() {
@@ -69,8 +73,7 @@ io.on('connection', (socket) => {
 
   socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits, rpgWeapon });
   socket.broadcast.emit('playerJoined', players[socket.id]);
-
-  socket.on('ping_test', () => { socket.emit('pong_test'); });
+  console.log('Игрок подключился:', socket.id);
 
   socket.on('setName', (name) => {
     if (players[socket.id]) {
@@ -105,10 +108,7 @@ io.on('connection', (socket) => {
       if (rpgWeapon.active && Math.hypot(p.x - rpgWeapon.x, p.y - rpgWeapon.y) < 0.5) {
         rpgWeapon.active = false;
         io.emit('rpgPicked', { playerId: socket.id });
-        setTimeout(() => {
-          rpgWeapon.active = true;
-          io.emit('rpgRespawned', rpgWeapon);
-        }, 25000);
+        setTimeout(() => { rpgWeapon.active = true; io.emit('rpgRespawned', rpgWeapon); }, 25000);
       }
     }
   });
