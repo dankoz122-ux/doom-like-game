@@ -11,13 +11,22 @@ let MAP = [];
 let myId = null;
 let players = {};
 let ammoBoxes = []; 
-let medkits = [];   // Массив аптечек с сервера
+let medkits = [];   
 
+// --- ДАННЫЕ ОРУЖИЯ (КОНФИГУРАЦИЯ) ---
+const WEAPONS = {
+  pistol: { name: 'ПИСТОЛЕТ', maxAmmo: 8, cd: 0.3, dmg: 25, reloadTime: 1.0 },
+  rifle: { name: 'АВТОМАТ', maxAmmo: 30, cd: 0.1, dmg: 10, reloadTime: 2.0 }
+};
+
+// --- СТРУКТУРА ИГРОКА (ДВА ОРУЖИЯ И СУМКА) ---
 const me = { 
   x: 2.5, y: 2.5, angle: 0, 
   health: 100, alive: true, 
   kills: 0, deaths: 0, name: '',
-  ammo: 8, maxAmmo: 8, reserveAmmo: 32 
+  currentWeapon: 'pistol',
+  ammo: { pistol: 8, rifle: 30 },
+  reserveAmmo: 60 // Общий запас патронов в сумке
 };
 
 let weaponRecoil = 0;       
@@ -28,7 +37,29 @@ let reloadTimer = 0;
 
 // ---------- ВВОД ----------
 const keys = {};
-document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+document.addEventListener('keydown', (e) => { 
+  keys[e.code] = true; 
+  
+  if (!me.alive) return;
+
+  // Кнопка R — перезарядка
+  if (e.code === 'KeyR' && reloadTimer <= 0) {
+    initiateReload();
+  }
+
+  // Кнопка 1 — Пистолет
+  if (e.code === 'Digit1' && me.currentWeapon !== 'pistol' && reloadTimer <= 0) {
+    me.currentWeapon = 'pistol';
+    shootCooldown = 0.2;
+  }
+
+  // Кнопка 2 — Автомат
+  if (e.code === 'Digit2' && me.currentWeapon !== 'rifle' && reloadTimer <= 0) {
+    me.currentWeapon = 'rifle';
+    shootCooldown = 0.2;
+  }
+});
+
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 canvas.addEventListener('click', () => {
@@ -77,7 +108,7 @@ socket.on('state', (serverPlayers) => {
 socket.on('ammoPicked', (data) => {
   const box = ammoBoxes.find(b => b.id === data.boxId);
   if (box) box.active = false;
-  if (data.playerId === myId) me.reserveAmmo = Math.min(99, me.reserveAmmo + 16);
+  if (data.playerId === myId) me.reserveAmmo = Math.min(180, me.reserveAmmo + 30); // Патроны в общий резерв
 });
 
 socket.on('ammoRespawned', (serverBox) => {
@@ -85,7 +116,6 @@ socket.on('ammoRespawned', (serverBox) => {
   if (box) box.active = true;
 });
 
-// Триггеры сбора аптечек
 socket.on('medkitPicked', (data) => {
   const kit = medkits.find(k => k.id === data.kitId);
   if (kit) kit.active = false;
@@ -111,7 +141,9 @@ socket.on('death', (data) => {
 socket.on('respawn', (data) => {
   if (data.id === myId) {
     me.x = data.x; me.y = data.y; me.health = 100; me.alive = true;
-    me.ammo = me.maxAmmo; me.reserveAmmo = 32;
+    me.ammo.pistol = WEAPONS.pistol.maxAmmo;
+    me.ammo.rifle = WEAPONS.rifle.maxAmmo;
+    me.reserveAmmo = 60;
     reloadTimer = 0; shootCooldown = 0;
     hideMessage();
   }
@@ -119,27 +151,39 @@ socket.on('respawn', (data) => {
 
 function isWall(x, y) {
   const mx = Math.floor(x), my = Math.floor(y);
-  if (my < 0 || my >= MAP.length || mx < 0 || mx >= MAP[0].length) return true;
+  if (my < 0 || my >= MAP.length || mx < 0 || mx >= MAP.length) return true;
   return MAP[my][mx] === 1;
 }
+function initiateReload() {
+  const wConf = WEAPONS[me.currentWeapon];
+  if (me.ammo[me.currentWeapon] < wConf.maxAmmo && me.reserveAmmo > 0) {
+    reloadTimer = wConf.reloadTime;
+  }
+}
+
 function update(dt) {
   if (!me.alive || !MAP.length) return;
   const moveSpeed = 3 * dt;
   const rotSpeed = 2.2 * dt;
 
-  if (weaponRecoil > 0) weaponRecoil -= dt * 7; // Чуть быстрее возврат пистолета
+  if (weaponRecoil > 0) weaponRecoil -= dt * 8; 
   if (weaponRecoil < 0) weaponRecoil = 0;
 
   if (shootCooldown > 0) shootCooldown -= dt;
+  
+  // Логика ручной/автоматической перезарядки
   if (reloadTimer > 0) {
     reloadTimer -= dt;
-    if (reloadTimer > 0.6) weaponRecoil = (1.2 - reloadTimer) * 1.5;
+    const wConf = WEAPONS[me.currentWeapon];
+    
+    // Анимация ухода ствола за экран
+    if (reloadTimer > wConf.reloadTime / 2) weaponRecoil = (wConf.reloadTime - reloadTimer) * 1.5;
     else weaponRecoil = reloadTimer * 1.5;
 
     if (reloadTimer <= 0) {
-      const needed = me.maxAmmo - me.ammo;
+      const needed = wConf.maxAmmo - me.ammo[me.currentWeapon];
       const transfer = Math.min(needed, me.reserveAmmo);
-      me.ammo += transfer;
+      me.ammo[me.currentWeapon] += transfer;
       me.reserveAmmo -= transfer;
       weaponRecoil = 0;
     }
@@ -228,7 +272,6 @@ function render() {
     ctx.fillRect(i, startY, 1, wallHeight); 
   }
 
-  // --- СОРТИРОВКА ОБЪЕКТОВ ---
   const sprites = [];
   Object.values(players).forEach(p => {
     if (p.id !== myId && p.alive) sprites.push({ x: p.x, y: p.y, type: 'player', data: p });
@@ -248,7 +291,7 @@ function render() {
     drawMuzzleFlash();
   }
   drawHUD();
-  drawMinimap(); // Рисуем карту поверх всего экрана
+  drawMinimap(); 
 }
 function distTo(p) { return Math.hypot(p.x - me.x, p.y - me.y); }
 function normalizeAngle(a) {
@@ -257,7 +300,6 @@ function normalizeAngle(a) {
   return a;
 }
 
-// Отрисовка игрока в виде курицы и других предметов
 function drawSprite(sprite, depthBuffer) {
   const dx = sprite.x - me.x, dy = sprite.y - me.y;
   const dist = Math.hypot(dx, dy);
@@ -273,39 +315,20 @@ function drawSprite(sprite, depthBuffer) {
 
   ctx.save();
   if (sprite.type === 'player') {
-    // --- СПРАЙТ КУРИЦЫ ИЗ ГЕОМЕТРИИ (РЕТРО-СТИЛЬ) ---
-    const cx = screenX;
-    const cy = H / 2 + size * 0.1;
-    const w = size * 0.4;
-    const h = size * 0.5;
+    const cx = screenX, cy = H / 2 + size * 0.1;
+    const w = size * 0.4, h = size * 0.5;
 
-    // Тело курицы (белое)
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(cx - w / 2, cy - h / 2, w, h); // Курица
+    ctx.fillStyle = '#e74c3c'; ctx.fillRect(cx - w / 4, cy - h / 2 - h * 0.2, w / 2, h * 0.2); // Гребень
+    ctx.fillStyle = '#f1c40f'; ctx.fillRect(cx - w * 0.1, cy - h * 0.2, w * 0.4, h * 0.15); // Клюв
+    ctx.fillStyle = '#111111'; ctx.fillRect(cx - w * 0.2, cy - h * 0.3, w * 0.1, h * 0.1); // Глаз
 
-    // Гребешок (красный)
-    ctx.fillStyle = '#e74c3c';
-    ctx.fillRect(cx - w / 4, cy - h / 2 - h * 0.2, w / 2, h * 0.2);
-
-    // Клюв (желтый)
-    ctx.fillStyle = '#f1c40f';
-    ctx.fillRect(cx - w * 0.1, cy - h * 0.2, w * 0.4, h * 0.15);
-
-    // Глаз (черный)
-    ctx.fillStyle = '#111111';
-    ctx.fillRect(cx - w * 0.2, cy - h * 0.3, w * 0.1, h * 0.1);
-
-    // Текст над курицей
-    ctx.fillStyle = '#fff';
-    ctx.font = '12px monospace';
-    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff'; ctx.font = '12px monospace'; ctx.textAlign = 'center';
     ctx.fillText(sprite.data.name || '', screenX, cy - h / 2 - 25);
 
     const hpWidth = size / 2;
-    ctx.fillStyle = '#222';
-    ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth, 4);
-    ctx.fillStyle = '#2ecc71';
-    ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth * Math.max(0, (sprite.data.health || 0) / 100), 4);
+    ctx.fillStyle = '#222'; ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth, 4);
+    ctx.fillStyle = '#2ecc71'; ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth * Math.max(0, (sprite.data.health || 0) / 100), 4);
   } 
   else if (sprite.type === 'ammo') {
     const boxWidth = size * 0.4, boxHeight = size * 0.25;
@@ -316,15 +339,10 @@ function drawSprite(sprite, depthBuffer) {
     ctx.fillText('AMMO', screenX, by + boxHeight * 0.7);
   }
   else if (sprite.type === 'medkit') {
-    // --- ОТРИСОВКА АПТЕЧКИ ---
     const kw = size * 0.35, kh = size * 0.35;
     const kx = screenX - kw / 2, ky = H / 2 + size * 0.15;
-
-    ctx.fillStyle = '#ecf0f1'; // Белый корпус
-    ctx.fillRect(kx, ky, kw, kh);
+    ctx.fillStyle = '#ecf0f1'; ctx.fillRect(kx, ky, kw, kh);
     ctx.strokeStyle = '#bdc3c7'; ctx.strokeRect(kx, ky, kw, kh);
-
-    // Красный медицинский крест
     ctx.fillStyle = '#e74c3c';
     ctx.fillRect(kx + kw * 0.4, ky + kh * 0.15, kw * 0.2, kh * 0.7);
     ctx.fillRect(kx + kw * 0.15, ky + kh * 0.4, kw * 0.7, kh * 0.2);
@@ -332,10 +350,10 @@ function drawSprite(sprite, depthBuffer) {
   ctx.restore();
 }
 
-// --- НОВАЯ МОДЕЛЬ ОРУЖИЯ (ПИСТОЛЕТ) ---
+// --- ОТРИСОВКА ВЫБРАННОГО ОРУЖИЯ (ПИСТОЛЕТ ИЛИ АВТОМАТ) ---
 function drawWeapon() {
   const ox = W / 2;
-  const oy = H + (weaponRecoil * 35); // Меньше ход отдачи у пистолета
+  const oy = H + (weaponRecoil * 35); 
 
   ctx.save();
   if (reloadTimer > 0) {
@@ -343,86 +361,68 @@ function drawWeapon() {
     ctx.fillText('ПЕРЕЗАРЯДКА...', ox, H - 160);
   }
 
-  // Рукоять пистолета
-  ctx.fillStyle = '#111111';
-  ctx.fillRect(ox - 10, oy - 60, 20, 60);
-
-  // Ствол и затвор пистолета (серая сталь)
-  ctx.fillStyle = '#7f8c8d';
-  ctx.fillRect(ox - 8, oy - 110, 16, 60);
-  
-  // Мушка и лазерный прицел
-  ctx.fillStyle = '#2c3e50';
-  ctx.fillRect(ox - 6, oy - 115, 12, 10);
-  ctx.fillStyle = '#e74c3c'; // Красная точка лазера на дуле
-  ctx.fillRect(ox - 2, oy - 115, 4, 4);
+  if (me.currentWeapon === 'pistol') {
+    // Модель Пистолета
+    ctx.fillStyle = '#111111'; ctx.fillRect(ox - 10, oy - 60, 20, 60);
+    ctx.fillStyle = '#7f8c8d'; ctx.fillRect(ox - 8, oy - 110, 16, 60);
+    ctx.fillStyle = '#2c3e50'; ctx.fillRect(ox - 6, oy - 115, 12, 10);
+    ctx.fillStyle = '#e74c3c'; ctx.fillRect(ox - 2, oy - 115, 4, 4);
+  } else {
+    // Модель Автомата (Длиннее и массивнее ствол + магазин)
+    ctx.fillStyle = '#111111'; ctx.fillRect(ox - 12, oy - 70, 24, 70); // Ствольная коробка
+    ctx.fillStyle = '#2c3e50'; ctx.fillRect(ox - 8, oy - 145, 16, 85); // Длинный ствол
+    // Изогнутый рожок (магазин) автомата
+    ctx.fillStyle = '#111111';
+    ctx.beginPath();
+    ctx.moveTo(ox - 10, oy - 30); ctx.quadraticCurveTo(ox - 25, oy - 10,  ox - 25, oy + 20);
+    ctx.lineTo(ox - 12, oy + 20); ctx.quadraticCurveTo(ox - 12, oy - 10, ox, oy - 30);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
 function drawMuzzleFlash() {
   if (muzzleFlashTimer <= 0) return;
-  const ox = W / 2, oy = H - 115 + (weaponRecoil * 35);
+  const rad = me.currentWeapon === 'pistol' ? 20 : 30; // Вспышка автомата больше
+  const ox = W / 2, oy = H - (me.currentWeapon === 'pistol' ? 115 : 145) + (weaponRecoil * 35);
   ctx.save();
   ctx.fillStyle = 'rgba(241, 196, 15, 0.8)';
-  ctx.beginPath(); ctx.arc(ox, oy, 20, 0, Math.PI * 2); ctx.fill(); // Вспышка пистолета меньше
+  ctx.beginPath(); ctx.arc(ox, oy, rad, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.arc(ox, oy, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(ox, oy, rad / 2.5, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
-// --- ОТРИСОВКА 2D-МИНИКАРТЫ (РАДАР) ---
 function drawMinimap() {
   if (!MAP.length) return;
-  
-  const scale = 6; // Размер одной ячейки на карте в пикселях
-  const mx = 10, my = 10; // Координаты карты на экране
-
+  const scale = 6, mx = 10, my = 10;
   ctx.save();
-  // Фон подложки радара
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  ctx.fillRect(mx, my, MAP[0].length * scale, MAP.length * scale);
-
-  // Стены
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(mx, my, MAP.length * scale, MAP.length * scale);
   ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
   for (let r = 0; r < MAP.length; r++) {
     for (let c = 0; c < MAP[r].length; c++) {
-      if (MAP[r][c] === 1) {
-        ctx.fillRect(mx + c * scale, my + r * scale, scale - 1, scale - 1);
-      }
+      if (MAP[r][c] === 1) ctx.fillRect(mx + c * scale, my + r * scale, scale - 1, scale - 1);
     }
   }
-
-  // Точки предметов патронов и аптечек
   ammoBoxes.forEach(b => { if (b.active) { ctx.fillStyle = '#e67e22'; ctx.fillRect(mx + b.x * scale - 1, my + b.y * scale - 1, 3, 3); } });
   medkits.forEach(k => { if (k.active) { ctx.fillStyle = '#2ecc71'; ctx.fillRect(mx + k.x * scale - 1, my + k.y * scale - 1, 3, 3); } });
-
-  // Точки врагов (игроков)
   ctx.fillStyle = '#e74c3c';
-  Object.values(players).forEach(p => {
-    if (p.id !== myId && p.alive) {
-      ctx.fillRect(mx + p.x * scale - 2, my + p.y * scale - 2, 4, 4);
-    }
-  });
-
-  // Моя позиция и луч направления взгляда
-  const pSize = 4;
-  const px = mx + me.x * scale;
-  const py = my + me.y * scale;
-
+  Object.values(players).forEach(p => { if (p.id !== myId && p.alive) ctx.fillRect(mx + p.x * scale - 2, my + p.y * scale - 2, 4, 4); });
+  const px = mx + me.x * scale, py = my + me.y * scale;
   ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(px, py);
-  ctx.lineTo(px + Math.cos(me.angle) * 12, py + Math.sin(me.angle) * 12); ctx.stroke();
-
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.arc(px, py, pSize / 2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + Math.cos(me.angle) * 12, py + Math.sin(me.angle) * 12); ctx.stroke();
+  ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
 function drawHUD() {
   ctx.textAlign = 'left'; ctx.font = '18px monospace'; ctx.fillStyle = '#fff';
-  ctx.fillText(`AMMO: ${me.ammo} / ${me.reserveAmmo}`, 10, H - 20);
-  ctx.fillText('HP: ' + Math.max(0, Math.floor(me.health)), 200, H - 20);
-  ctx.fillText('Убийства: ' + me.kills + '   Смерти: ' + me.deaths, 10, H - 45);
+  
+  const wConf = WEAPONS[me.currentWeapon];
+  ctx.fillText(`ОРУЖИЕ: ${wConf.name}`, 10, H - 45);
+  ctx.fillText(`AMMO: ${me.ammo[me.currentWeapon]} / ${wConf.maxAmmo} [РЕЗЕРВ: ${me.reserveAmmo}]`, 10, H - 20);
+  ctx.fillText('HP: ' + Math.max(0, Math.floor(me.health)), 450, H - 20);
+  ctx.fillText(`K: ${me.kills}  D: ${me.deaths}`, W - 120, H - 20);
 
   ctx.strokeStyle = hitMarkerTimer > 0 ? '#e74c3c' : '#fff';
   ctx.lineWidth = hitMarkerTimer > 0 ? 3 : 2;
@@ -435,15 +435,18 @@ function drawHUD() {
 function shoot() {
   if (!me.alive || shootCooldown > 0 || reloadTimer > 0) return;
 
-  if (me.ammo <= 0) {
-    if (me.reserveAmmo > 0) reloadTimer = 1.2;
+  const currentAmmo = me.ammo[me.currentWeapon];
+  if (currentAmmo <= 0) {
+    initiateReload();
     return;
   }
 
-  me.ammo--;
-  shootCooldown = 0.3; // У пистолета кулдаун чуть меньше
+  const wConf = WEAPONS[me.currentWeapon];
+  me.ammo[me.currentWeapon]--;
+  shootCooldown = wConf.cd; 
+
   weaponRecoil = 1.0;
-  muzzleFlashTimer = 0.06; 
+  muzzleFlashTimer = me.currentWeapon === 'pistol' ? 0.06 : 0.04; 
   hitMarkerTimer = 0.12;   
 
   const { dist: wallDist } = castRay(me.angle);
@@ -463,10 +466,11 @@ function shoot() {
     }
   }
 
-  if (best) socket.emit('shoot', { targetId: best, damage: 25 });
+  // Передаем точный урон выбранного оружия на сервер
+  if (best) socket.emit('shoot', { targetId: best, damage: wConf.dmg });
   
-  if (me.ammo === 0 && me.reserveAmmo > 0) {
-    setTimeout(() => { if (me.alive && me.ammo === 0) reloadTimer = 1.2; }, 300);
+  if (me.ammo[me.currentWeapon] === 0 && me.reserveAmmo > 0) {
+    setTimeout(() => { if (me.alive && me.ammo[me.currentWeapon] === 0) initiateReload(); }, wConf.cd * 1000);
   }
 }
 
