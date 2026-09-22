@@ -26,8 +26,6 @@ const me = {
 };
 
 let weaponRecoil = 0, muzzleFlashTimer = 0, hitMarkerTimer = 0, shootCooldown = 0, reloadTimer = 0;        
-
-// Переменная для отслеживания зажатого клика (нужна для автомата)
 let isMouseDown = false;
 
 // ---------- ВВОД ----------
@@ -45,25 +43,17 @@ document.addEventListener('keydown', (e) => {
 });
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-// Отслеживание кликов и зажатий для автоматического огня
 canvas.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas) {
     canvas.requestPointerLock();
   } else {
     isMouseDown = true;
-    shoot(); // Первый выстрел срабатывает мгновенно при нажатии
+    shoot(); 
   }
 });
 
-document.addEventListener('mouseup', () => {
-  isMouseDown = false;
-});
-
-// Если фокус с окна пропал, сбрасываем зажатие курсора
-window.addEventListener('blur', () => {
-  isMouseDown = false;
-});
-
+document.addEventListener('mouseup', () => { isMouseDown = false; });
+window.addEventListener('blur', () => { isMouseDown = false; });
 document.addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) me.angle += e.movementX * 0.0025; });
 
 // ---------- СЕТЬ ----------
@@ -112,7 +102,8 @@ socket.on('respawn', (data) => {
   if (data.id === myId) {
     me.x = data.x; me.y = data.y; me.health = 100; me.alive = true;
     me.ammo.pistol = WEAPONS.pistol.maxAmmo; me.ammo.rifle = WEAPONS.rifle.maxAmmo; me.ammo.rpg = 0;
-    me.reserveAmmo = 60; me.hasRpg = false; me.currentWeapon = 'pistol'; reloadTimer = 0; shootCooldown = 0; hideMessage();
+    me.reserveAmmo = 60; me.hasRpg = false; me.currentWeapon = 'pistol'; reloadTimer = 0; shootCooldown = 0; 
+    hideMessage(); // Убираем сообщение о смерти при респауне
   }
 });
 
@@ -144,8 +135,6 @@ function update(dt) {
     }
   }
 
-  // --- ЛОГИКА АВТОМАТИЧЕСКОЙ СТРЕЛЬБЫ ЧЕРЕЗ ЗАЖАТИЕ ---
-  // Каждые 0.1 секунды (cd автомата), если зажат клик и выбран автомат, вызываем стрельбу
   if (isMouseDown && me.currentWeapon === 'rifle' && shootCooldown <= 0 && reloadTimer <= 0) {
     shoot();
   }
@@ -330,6 +319,21 @@ function shoot() {
   }
   if (best) socket.emit('shoot', { targetId: best, damage: wConf.dmg });
   if (me.ammo[me.currentWeapon] === 0 && me.reserveAmmo > 0) { setTimeout(() => { if (me.alive && me.ammo[me.currentWeapon] === 0) initiateReload(); }, wConf.cd * 1000); }
+}
+
+// --- СИСТЕМНЫЕ ФУНКЦИИ ИСПРАВЛЕННОГО ИНТЕРФЕЙСА ---
+function showMessage(text) {
+  const el = document.getElementById('message');
+  if (el) {
+    el.textContent = text + ' — возрождение через 3 сек...';
+    el.style.display = 'block';
+  }
+}
+function hideMessage() {
+  const el = document.getElementById('message');
+  if (el) {
+    el.style.display = 'none'; // Полностью исправленное и безопасное скрытие плашки
+  }
 }
 
 let lastTime = performance.now();
