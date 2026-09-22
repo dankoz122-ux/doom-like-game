@@ -10,12 +10,21 @@ const MAX_DEPTH = 20;
 let MAP = [];
 let myId = null;
 let players = {};
-const me = { x: 2.5, y: 2.5, angle: 0, health: 100, alive: true, kills: 0, deaths: 0, name: '' };
 
-// --- НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ ЭФФЕКТОВ И ОРУЖИЯ ---
+// --- ОБЪЕКТ ИГРОКА (ДОБАВЛЕНЫ ПАТРОНЫ) ---
+const me = { 
+  x: 2.5, y: 2.5, angle: 0, 
+  health: 100, alive: true, 
+  kills: 0, deaths: 0, name: '',
+  ammo: 8, maxAmmo: 8, reserveAmmo: 32 
+};
+
+// --- ТАЙМЕРЫ ЭФФЕКТОВ И ГЕЙМПЛЕЯ ---
 let weaponRecoil = 0;       // Смещение оружия при отдаче
 let muzzleFlashTimer = 0;   // Таймер отрисовки вспышки
 let hitMarkerTimer = 0;     // Таймер красного прицела при попадании
+let shootCooldown = 0;      // КД между выстрелами
+let reloadTimer = 0;        // Таймер блокировки при перезарядке
 
 // ---------- ВВОД ----------
 const keys = {};
@@ -80,6 +89,8 @@ socket.on('death', (data) => {
 socket.on('respawn', (data) => {
   if (data.id === myId) {
     me.x = data.x; me.y = data.y; me.health = 100; me.alive = true;
+    me.ammo = me.maxAmmo; me.reserveAmmo = 32;
+    reloadTimer = 0; shootCooldown = 0;
     hideMessage();
   }
 });
@@ -95,11 +106,24 @@ function update(dt) {
   const moveSpeed = 3 * dt;
   const rotSpeed = 2.2 * dt;
 
-  // Плавное возвращение оружия в исходную позицию после отдачи
-  if (weaponRecoil > 0) weaponRecoil -= dt * 5;
+  if (weaponRecoil > 0) weaponRecoil -= dt * 6;
   if (weaponRecoil < 0) weaponRecoil = 0;
 
-  // Уменьшение таймеров эффектов вспышки и попадания
+  if (shootCooldown > 0) shootCooldown -= dt;
+  if (reloadTimer > 0) {
+    reloadTimer -= dt;
+    if (reloadTimer > 0.6) weaponRecoil = (1.2 - reloadTimer) * 1.5;
+    else weaponRecoil = reloadTimer * 1.5;
+
+    if (reloadTimer <= 0) {
+      const needed = me.maxAmmo - me.ammo;
+      const transfer = Math.min(needed, me.reserveAmmo);
+      me.ammo += transfer;
+      me.reserveAmmo -= transfer;
+      weaponRecoil = 0;
+    }
+  }
+
   if (muzzleFlashTimer > 0) muzzleFlashTimer -= dt;
   if (hitMarkerTimer > 0) hitMarkerTimer -= dt;
 
@@ -119,55 +143,95 @@ function update(dt) {
   socket.emit('move', { x: me.x, y: me.y, angle: me.angle });
 }
 
-// ---------- RAYCASTING ----------
+// ---------- RAYCASTING С РАСЧЕТОМ СТОРОНЫ СТЕНЫ ----------
 function castRay(angle) {
   const cos = Math.cos(angle), sin = Math.sin(angle);
-  const step = 0.02;
+  const step = 0.015; 
   let dist = 0;
   let x = me.x, y = me.y;
+  
   while (dist < MAX_DEPTH) {
     dist += step;
     x = me.x + cos * dist;
     y = me.y + sin * dist;
-    if (isWall(x, y)) break;
+    if (isWall(x, y)) {
+      const hitX = x - Math.floor(x);
+      const hitY = y - Math.floor(y);
+      let wallX = hitX;
+      let isVertical = false;
+      
+      if (Math.abs(hitX) < 0.02 || Math.abs(hitX) > 0.98) {
+        wallX = hitY;
+        isVertical = true;
+      }
+      return { dist, wallX, isVertical };
+    }
   }
-  return dist;
+  return { dist: MAX_DEPTH, wallX: 0, isVertical: false };
 }
 
 function render() {
   if (!MAP.length) return;
 
-  ctx.fillStyle = '#3a3a3a'; ctx.fillRect(0, 0, W, H / 2);     // потолок
-  ctx.fillStyle = '#5a5a5a'; ctx.fillRect(0, H / 2, W, H / 2);  // пол
+  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, W, H / 2);     // Потолок
+  ctx.fillStyle = '#2b2b2b'; ctx.fillRect(0, H / 2, W, H / 2);  // Пол
 
   const depthBuffer = new Array(NUM_RAYS);
 
   for (let i = 0; i < NUM_RAYS; i++) {
     const rayAngle = me.angle - FOV / 2 + (i / NUM_RAYS) * FOV;
-    let dist = castRay(rayAngle);
+    let { dist, wallX, isVertical } = castRay(rayAngle);
     dist *= Math.cos(rayAngle - me.angle); 
     depthBuffer[i] = dist;
 
-    const wallHeight = Math.min(H * 3, H / (dist + 0.0001));
-    const shade = Math.max(0, 1 - dist / MAX_DEPTH);
-    const c = Math.floor(70 + 150 * shade);
-    ctx.fillStyle = `rgb(${c}, ${Math.floor(c * 0.4)}, ${Math.floor(c * 0.25)})`;
-    ctx.fillRect(i, (H - wallHeight) / 2, 1, wallHeight);
+    const wallHeight = Math.min(H * 4, H / (dist + 0.0001));
+    const startY = Math.floor((H - wallHeight) / 2);
+    const light = Math.max(0, 1 - dist / MAX_DEPTH);
+    
+    // --- ПРОЦЕДУРНАЯ ТЕКСТУРА КИРПИЧЕЙ ---
+    const rBase = isVertical ? 110 : 150;
+    const gBase = isVertical ? 35 : 50;
+    const bBase = isVertical ? 20 : 30;
+    const texHeight = 64;
+    const brickRowHeight = 8;
+
+    for (let sy = 0; sy < wallHeight; sy++) {
+      const currentY = startY + sy;
+      if (currentY < 0 || currentY >= H) continue;
+
+      const texY = Math.floor((sy / wallHeight) * texHeight);
+      const isHorizontalJoint = (texY % brickRowHeight === 0);
+      const brickRow = Math.floor(texY / brickRowHeight);
+      const xOffset = (brickRow % 2 === 0) ? 0.25 : 0.75;
+      const normalizedWallX = (wallX + xOffset) * 2;
+      const isVerticalJoint = (Math.floor(normalizedWallX * 32) % 16 === 0);
+
+      let r = rBase, g = gBase, b = bBase;
+
+      if (isHorizontalJoint || isVerticalJoint) {
+        r = isVertical ? 40 : 60; g = isVertical ? 40 : 60; b = isVertical ? 40 : 60;
+      } else {
+        const noise = (Math.sin(texY * 2 + wallX * 20) * 12);
+        r = Math.min(255, Math.max(0, r + noise));
+        g = Math.min(255, Math.max(0, g + noise));
+        b = Math.min(255, Math.max(0, b + noise));
+      }
+
+      ctx.fillStyle = `rgb(${Math.floor(r * light)}, ${Math.floor(g * light)}, ${Math.floor(b * light)})`;
+      ctx.fillRect(i, currentY, 1, 1);
+    }
   }
 
   const others = Object.values(players).filter((p) => p.id !== myId && p.alive !== false);
   others.sort((a, b) => distTo(b) - distTo(a));
   for (const p of others) drawSprite(p, depthBuffer);
 
-  // Отрисовка оружия и эффектов поверх 3D сцены, если игрок жив
   if (me.alive) {
     drawWeapon();
     drawMuzzleFlash();
   }
-
   drawHUD();
 }
-
 function distTo(p) { return Math.hypot(p.x - me.x, p.y - me.y); }
 function normalizeAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
@@ -205,43 +269,43 @@ function drawSprite(p, depthBuffer) {
   ctx.fillRect(screenX - hpWidth / 2, H / 2 - size / 2 - 18, hpWidth * Math.max(0, (p.health || 0) / 100), 4);
 }
 
-// --- ОТРИСОВКА ОРУЖИЯ (DOOM-STYLE) ---
 function drawWeapon() {
   const ox = W / 2;
-  const oy = H + (weaponRecoil * 40); // Смещение вниз при отдаче
+  const oy = H + (weaponRecoil * 50); 
 
   ctx.save();
-  // Руки/основание оружия
+  if (reloadTimer > 0) {
+    ctx.fillStyle = '#e74c3c';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ПЕРЕЗАРЯДКА...', ox, H - 160);
+  }
+
   ctx.fillStyle = '#2c3e50';
   ctx.fillRect(ox - 30, oy - 90, 60, 90);
   
-  // Ствол двустволки
   ctx.fillStyle = '#7f8c8d';
   ctx.fillRect(ox - 14, oy - 140, 12, 70);
   ctx.fillRect(ox + 2, oy - 140, 12, 70);
 
-  // Дуло стволов (тёмные отверстия)
   ctx.fillStyle = '#111';
   ctx.fillRect(ox - 12, oy - 140, 8, 5);
   ctx.fillRect(ox + 4, oy - 140, 8, 5);
   ctx.restore();
 }
 
-// --- ОТРИСОВКА ВСПЫШКИ ВЫСТРЕЛА ---
 function drawMuzzleFlash() {
   if (muzzleFlashTimer <= 0) return;
 
   const ox = W / 2;
-  const oy = H - 140 + (weaponRecoil * 40);
+  const oy = H - 140 + (weaponRecoil * 50);
 
   ctx.save();
-  // Внешняя большая вспышка (желтая)
   ctx.fillStyle = 'rgba(241, 196, 15, 0.8)';
   ctx.beginPath();
   ctx.arc(ox, oy, 35, 0, Math.PI * 2);
   ctx.fill();
 
-  // Внутреннее горячее ядро вспышки (белое)
   ctx.fillStyle = '#ffffff';
   ctx.beginPath();
   ctx.arc(ox, oy, 15, 0, Math.PI * 2);
@@ -253,10 +317,11 @@ function drawHUD() {
   ctx.textAlign = 'left';
   ctx.font = '18px monospace';
   ctx.fillStyle = '#fff';
-  ctx.fillText('HP: ' + Math.max(0, Math.floor(me.health)), 10, H - 20);
+  
+  ctx.fillText(`AMMO: ${me.ammo} / ${me.reserveAmmo}`, 10, H - 20);
+  ctx.fillText('HP: ' + Math.max(0, Math.floor(me.health)), 200, H - 20);
   ctx.fillText('Убийства: ' + me.kills + '   Смерти: ' + me.deaths, 10, H - 45);
 
-  // Цвет прицела меняется при попадании
   ctx.strokeStyle = hitMarkerTimer > 0 ? '#e74c3c' : '#fff';
   ctx.lineWidth = hitMarkerTimer > 0 ? 3 : 2;
   ctx.beginPath();
@@ -265,16 +330,21 @@ function drawHUD() {
   ctx.stroke();
 }
 
-// ---------- СТРЕЛЬБА ----------
 function shoot() {
-  if (!me.alive) return;
+  if (!me.alive || shootCooldown > 0 || reloadTimer > 0) return;
 
-  // Активируем эффекты отдачи и вспышки на клиенте локально
+  if (me.ammo <= 0) {
+    if (me.reserveAmmo > 0) reloadTimer = 1.2;
+    return;
+  }
+
+  me.ammo--;
+  shootCooldown = 0.4;
   weaponRecoil = 1.0;
-  muzzleFlashTimer = 0.08; // Вспышка на 80 миллисекунд
-  hitMarkerTimer = 0.15;   // Прицел краснеет на 150 миллисекунд
+  muzzleFlashTimer = 0.08; 
+  hitMarkerTimer = 0.15;   
 
-  const wallDist = castRay(me.angle);
+  const { dist: wallDist } = castRay(me.angle);
   let best = null, bestDist = Infinity;
 
   for (const id in players) {
@@ -292,19 +362,23 @@ function shoot() {
   }
 
   if (best) socket.emit('shoot', { targetId: best, damage: 25 });
+  
+  if (me.ammo === 0 && me.reserveAmmo > 0) {
+    setTimeout(() => { if (me.alive && me.ammo === 0) reloadTimer = 1.2; }, 400);
+  }
 }
 
-// ---------- СООБЩЕНИЯ ----------
 function showMessage(text) {
   const el = document.getElementById('message');
   el.textContent = text + ' — возрождение через 3 сек...';
   el.style.display = 'block';
 }
 function hideMessage() {
-  document.getElementById('message').style.display = 'none';
+  document.getElementById('message').style.none = 'none';
+  const el = document.getElementById('message');
+  if (el) el.style.display = 'none';
 }
 
-// ---------- ГЛАВНЫЙ ЦИКЛ ----------
 let lastTime = performance.now();
 function loop(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
