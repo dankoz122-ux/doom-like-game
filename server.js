@@ -9,6 +9,7 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// 1 = стена, 0 = проход. Классическая "коридорная" карта в стиле Doom.
 const MAP = [
   [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
   [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
@@ -25,21 +26,27 @@ const MAP = [
   [1,0,0,1,0,1,1,1,1,1,1,1,0,1,0,1],
   [1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1],
   [1,0,1,1,1,1,1,1,1,1,0,1,1,1,0,1],
-  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
 ];
 
 const SPAWNS = [
   { x: 2.5, y: 1.5 }, { x: 13.5, y: 1.5 },
-  { x: 2.5, y: 13.5 }, { x: 13.5, y: 13.5 }, { x: 7.5, y: 7.5 },
+  { x: 2.5, y: 13.5 }, { x: 13.5, y: 13.5 }, { x: 7.5, y: 7.5 }
 ];
 
-// Точки размещения ящиков с патронами на карте
 const ammoBoxes = [
   { id: 'b1', x: 5.5, y: 1.5, active: true },
   { id: 'b2', x: 1.5, y: 5.5, active: true },
   { id: 'b3', x: 14.5, y: 5.5, active: true },
   { id: 'b4', x: 9.5, y: 9.5, active: true },
   { id: 'b5', x: 5.5, y: 13.5, active: true }
+];
+
+const medkits = [
+  { id: 'm1', x: 3.5, y: 3.5, active: true },
+  { id: 'm2', x: 12.5, y: 3.5, active: true },
+  { id: 'm3', x: 3.5, y: 11.5, active: true },
+  { id: 'm4', x: 12.5, y: 11.5, active: true }
 ];
 
 const players = {};
@@ -53,11 +60,10 @@ io.on('connection', (socket) => {
   players[socket.id] = {
     id: socket.id, x: spawn.x, y: spawn.y, angle: 0,
     health: 100, kills: 0, deaths: 0,
-    name: 'Player' + socket.id.slice(0, 4), alive: true,
+    name: 'Player' + socket.id.slice(0, 4), alive: true
   };
 
-  // Передаем при подключении карту, игроков и список ящиков
-  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes });
+  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits });
   socket.broadcast.emit('playerJoined', players[socket.id]);
   console.log('Игрок подключился:', socket.id);
 
@@ -74,17 +80,22 @@ io.on('connection', (socket) => {
     if (typeof data.x === 'number' && typeof data.y === 'number' && typeof data.angle === 'number') {
       p.x = data.x; p.y = data.y; p.angle = data.angle;
 
-      // Проверка сбора патронов сервером
+      // Проверка сбора патронов
       for (const box of ammoBoxes) {
         if (box.active && Math.hypot(p.x - box.x, p.y - box.y) < 0.5) {
           box.active = false;
           io.emit('ammoPicked', { boxId: box.id, playerId: socket.id });
-          
-          // Респаун ящика через 10 секунд
-          setTimeout(() => {
-            box.active = true;
-            io.emit('ammoRespawned', box);
-          }, 10000);
+          setTimeout(() => { box.active = true; io.emit('ammoRespawned', box); }, 10000);
+        }
+      }
+
+      // Проверка сбора аптечек
+      for (const kit of medkits) {
+        if (kit.active && p.health < 100 && Math.hypot(p.x - kit.x, p.y - kit.y) < 0.5) {
+          kit.active = false;
+          p.health = Math.min(100, p.health + 25);
+          io.emit('medkitPicked', { kitId: kit.id, playerId: socket.id, health: p.health });
+          setTimeout(() => { kit.active = true; io.emit('medkitRespawned', kit); }, 15000);
         }
       }
     }
