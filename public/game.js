@@ -3,15 +3,15 @@ const socket = io();
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
-const FOV = Math.PI / 3;      // 60 градусов, как в Doom
+const FOV = Math.PI / 3;      
 const NUM_RAYS = W;
 const MAX_DEPTH = 20;
 
 let MAP = [];
 let myId = null;
 let players = {};
+let ammoBoxes = []; // Массив ящиков, полученный от сервера
 
-// --- ОБЪЕКТ ИГРОКА ---
 const me = { 
   x: 2.5, y: 2.5, angle: 0, 
   health: 100, alive: true, 
@@ -19,7 +19,6 @@ const me = {
   ammo: 8, maxAmmo: 8, reserveAmmo: 32 
 };
 
-// --- ТАЙМЕРЫ ЭФФЕКТОВ И ГЕЙМПЛЕЯ ---
 let weaponRecoil = 0;       
 let muzzleFlashTimer = 0;   
 let hitMarkerTimer = 0;     
@@ -50,6 +49,7 @@ socket.on('init', (data) => {
   myId = data.id;
   MAP = data.map;
   players = data.players;
+  ammoBoxes = data.ammoBoxes || [];
   const p = players[myId];
   if (p) { me.x = p.x; me.y = p.y; me.angle = p.angle; me.health = p.health; }
 
@@ -72,12 +72,23 @@ socket.on('state', (serverPlayers) => {
   }
 });
 
+// События сбора и респауна патронов
+socket.on('ammoPicked', (data) => {
+  const box = ammoBoxes.find(b => b.id === data.boxId);
+  if (box) box.active = false;
+  if (data.playerId === myId) {
+    me.reserveAmmo = Math.min(99, me.reserveAmmo + 16); // Добавляем +16 патронов
+  }
+});
+
+socket.on('ammoRespawned', (serverBox) => {
+  const box = ammoBoxes.find(b => b.id === serverBox.id);
+  if (box) box.active = true;
+});
+
 socket.on('playerJoined', (p) => { players[p.id] = p; });
 socket.on('playerLeft', (id) => { delete players[id]; });
-
-socket.on('damage', (data) => {
-  if (data.targetId === myId) me.health = data.health;
-});
+socket.on('damage', (data) => { if (data.targetId === myId) me.health = data.health; });
 
 socket.on('death', (data) => {
   if (data.targetId === myId) {
@@ -95,10 +106,9 @@ socket.on('respawn', (data) => {
   }
 });
 
-// ---------- ЛОГИКА КАРТЫ ----------
 function isWall(x, y) {
   const mx = Math.floor(x), my = Math.floor(y);
-  if (my < 0 || my >= MAP.length || mx < 0 || mx >= MAP.length) return true;
+  if (my < 0 || my >= MAP.length || mx < 0 || mx >= MAP[0].length) return true;
   return MAP[my][mx] === 1;
 }
 function update(dt) {
@@ -143,7 +153,6 @@ function update(dt) {
   socket.emit('move', { x: me.x, y: me.y, angle: me.angle });
 }
 
-// ---------- БЫСТРЫЙ RAYCASTING ----------
 function castRay(angle) {
   const cos = Math.cos(angle), sin = Math.sin(angle);
   const step = 0.02; 
@@ -168,7 +177,6 @@ function castRay(angle) {
 function render() {
   if (!MAP.length) return;
 
-  // Отрисовка пола и потолка двумя быстрыми полигонами
   ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, W, H / 2);     
   ctx.fillStyle = '#2b2b2b'; ctx.fillRect(0, H / 2, W, H / 2);  
 
@@ -184,7 +192,6 @@ function render() {
     const startY = Math.floor((H - wallHeight) / 2);
     const light = Math.max(0, 1 - dist / MAX_DEPTH);
     
-    // --- ОПТИМИЗИРОВАННАЯ ТЕКСТУРА ЧЕРЕЗ ГРАДИЕНТ (В 100 РАЗ БЫСТРЕЕ) ---
     const r = isVertical ? Math.floor(100 * light) : Math.floor(140 * light);
     const g = isVertical ? Math.floor(30 * light) : Math.floor(45 * light);
     const b = isVertical ? Math.floor(15 * light) : Math.floor(25 * light);
@@ -193,33 +200,45 @@ function render() {
     const seamR = isVertical ? Math.floor(35 * light) : Math.floor(50 * light);
     const seamColor = `rgb(${seamR},${seamR},${seamR})`;
 
-    // Создаем вертикальный градиент, имитирующий ряды кирпичей
     const grad = ctx.createLinearGradient(0, startY, 0, startY + wallHeight);
-    
-    // Делаем 8 горизонтальных рядов кирпичей через циклы остановок цвета
     for (let row = 0; row < 8; row++) {
       const startPos = row / 8;
       const endPos = (row + 1) / 8;
-      
-      // Чередуем шум на кирпичах в зависимости от координаты попадания луча wallX
       const noise = Math.sin(row * 5 + wallX * 10) > 0;
       const currentBrickColor = noise ? `rgb(${Math.min(255, r+15)},${Math.min(255, g+5)},${b})` : brickColor;
 
-      grad.addColorStop(startPos, seamColor);       // Шов в начале ряда
-      grad.addColorStop(startPos + 0.03, currentBrickColor); // Сам кирпич
+      grad.addColorStop(startPos, seamColor);       
+      grad.addColorStop(startPos + 0.03, currentBrickColor); 
       grad.addColorStop(endPos - 0.03, currentBrickColor);
     }
     
-    // Вертикальный шов (вертикальная насечка на кирпиче через регулярные интервалы по горизонтали)
     const isVertSeam = Math.floor(wallX * 5) % 2 === 0;
-    
     ctx.fillStyle = isVertSeam ? seamColor : grad;
-    ctx.fillRect(i, startY, 1, wallHeight); // Отрисовка всей полосы стены ОДНИМ вызовом
+    ctx.fillRect(i, startY, 1, wallHeight); 
   }
 
-  const others = Object.values(players).filter((p) => p.id !== myId && p.alive !== false);
-  others.sort((a, b) => distTo(b) - distTo(a));
-  for (const p of others) drawSprite(p, depthBuffer);
+  // --- СБОР ВСЕХ СПРАЙТОВ (ИГРОКИ + ЯЩИКИ) ДЛЯ СОРТИРОВКИ ГЛУБИНЫ ---
+  const sprites = [];
+  
+  // Добавляем врагов
+  Object.values(players).forEach(p => {
+    if (p.id !== myId && p.alive) {
+      sprites.push({ x: p.x, y: p.y, type: 'player', data: p });
+    }
+  });
+
+  // Добавляем активные ящики
+  ammoBoxes.forEach(b => {
+    if (b.active) {
+      sprites.push({ x: b.x, y: b.y, type: 'ammo', data: b });
+    }
+  });
+
+  // Сортируем: сначала рисуем дальние объекты, потом ближние
+  sprites.sort((a, b) => Math.hypot(b.x - me.x, b.y - me.y) - Math.hypot(a.x - me.x, a.y - me.y));
+  
+  // Отрисовка
+  sprites.forEach(s => drawSprite(s, depthBuffer));
 
   if (me.alive) {
     drawWeapon();
@@ -227,41 +246,67 @@ function render() {
   }
   drawHUD();
 }
-function distTo(p) { return Math.hypot(p.x - me.x, p.y - me.y); }
 function normalizeAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a < -Math.PI) a += 2 * Math.PI;
   return a;
 }
 
-function drawSprite(p, depthBuffer) {
-  const dx = p.x - me.x, dy = p.y - me.y;
+// Универсальная отрисовка спрайтов
+function drawSprite(sprite, depthBuffer) {
+  const dx = sprite.x - me.x, dy = sprite.y - me.y;
   const dist = Math.hypot(dx, dy);
-  const angleToPlayer = normalizeAngle(Math.atan2(dy, dx) - me.angle);
+  const angleToSprite = normalizeAngle(Math.atan2(dy, dx) - me.angle);
 
-  if (Math.abs(angleToPlayer) > FOV / 2 + 0.3) return;
+  if (Math.abs(angleToSprite) > FOV / 2 + 0.3) return;
 
-  const screenX = (0.5 + angleToPlayer / FOV) * W;
+  const screenX = (0.5 + angleToSprite / FOV) * W;
   const size = Math.min(H * 2, H / (dist + 0.0001)) * 0.6;
-
   const col = Math.floor(screenX);
-  if (col >= 0 && col < NUM_RAYS && depthBuffer[col] < dist) return; 
 
-  ctx.fillStyle = '#c0392b';
-  ctx.fillRect(screenX - size / 4, H / 2 - size / 2, size / 2, size);
-  ctx.fillStyle = '#111';
-  ctx.fillRect(screenX - size / 6, H / 2 - size / 2, size / 3, size / 4);
+  if (col >= 0 && col < NUM_RAYS && depthBuffer[col] < dist) return; // Скрыто за стеной
 
-  ctx.fillStyle = '#fff';
-  ctx.font = '12px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(p.name || '', screenX, H / 2 - size / 2 - 8);
+  ctx.save();
+  if (sprite.type === 'player') {
+    // Отрисовка игрока (Твой оригинальный код)
+    const p = sprite.data;
+    ctx.fillStyle = '#c0392b';
+    ctx.fillRect(screenX - size / 4, H / 2 - size / 2, size / 2, size);
+    ctx.fillStyle = '#111';
+    ctx.fillRect(screenX - size / 6, H / 2 - size / 2, size / 3, size / 4);
 
-  const hpWidth = size / 2;
-  ctx.fillStyle = '#222';
-  ctx.fillRect(screenX - hpWidth / 2, H / 2 - size / 2 - 18, hpWidth, 4);
-  ctx.fillStyle = '#2ecc71';
-  ctx.fillRect(screenX - hpWidth / 2, H / 2 - size / 2 - 18, hpWidth * Math.max(0, (p.health || 0) / 100), 4);
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.name || '', screenX, H / 2 - size / 2 - 8);
+
+    const hpWidth = size / 2;
+    ctx.fillStyle = '#222';
+    ctx.fillRect(screenX - hpWidth / 2, H / 2 - size / 2 - 18, hpWidth, 4);
+    ctx.fillStyle = '#2ecc71';
+    ctx.fillRect(screenX - hpWidth / 2, H / 2 - size / 2 - 18, hpWidth * Math.max(0, (p.health || 0) / 100), 4);
+  } 
+  else if (sprite.type === 'ammo') {
+    // --- ОТРИСОВКА ЯЩИКА С ПАТРОНАМИ (ЯРКИЙ РЕТРО-СТИЛЬ) ---
+    const boxWidth = size * 0.4;
+    const boxHeight = size * 0.25;
+    const bx = screenX - boxWidth / 2;
+    const by = H / 2 + size * 0.2; // Размещаем на полу
+
+    // Корпус ящика (Зелено-желтый военный контейнер)
+    ctx.fillStyle = '#d35400';
+    ctx.fillRect(bx, by, boxWidth, boxHeight);
+    ctx.strokeStyle = '#f1c40f';
+    ctx.lineWidth = Math.max(1, size * 0.02);
+    ctx.strokeRect(bx, by, boxWidth, boxHeight);
+
+    // Надпись AMMO поверх контейнера
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = `bold ${Math.max(8, size * 0.1)}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText('AMMO', screenX, by + boxHeight * 0.7);
+  }
+  ctx.restore();
 }
 
 function drawWeapon() {
@@ -278,11 +323,9 @@ function drawWeapon() {
 
   ctx.fillStyle = '#2c3e50';
   ctx.fillRect(ox - 30, oy - 90, 60, 90);
-  
   ctx.fillStyle = '#7f8c8d';
   ctx.fillRect(ox - 14, oy - 140, 12, 70);
   ctx.fillRect(ox + 2, oy - 140, 12, 70);
-
   ctx.fillStyle = '#111';
   ctx.fillRect(ox - 12, oy - 140, 8, 5);
   ctx.fillRect(ox + 4, oy - 140, 8, 5);
@@ -291,20 +334,13 @@ function drawWeapon() {
 
 function drawMuzzleFlash() {
   if (muzzleFlashTimer <= 0) return;
-
   const ox = W / 2;
   const oy = H - 140 + (weaponRecoil * 50);
-
   ctx.save();
   ctx.fillStyle = 'rgba(241, 196, 15, 0.8)';
-  ctx.beginPath();
-  ctx.arc(ox, oy, 35, 0, Math.PI * 2);
-  ctx.fill();
-
+  ctx.beginPath(); ctx.arc(ox, oy, 35, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(ox, oy, 15, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.arc(ox, oy, 15, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
