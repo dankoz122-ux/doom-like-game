@@ -10,7 +10,8 @@ const MAX_DEPTH = 20;
 let MAP = [];
 let myId = null;
 let players = {};
-let ammoBoxes = []; // Массив ящиков, полученный от сервера
+let ammoBoxes = []; 
+let medkits = [];   // Массив аптечек с сервера
 
 const me = { 
   x: 2.5, y: 2.5, angle: 0, 
@@ -50,6 +51,7 @@ socket.on('init', (data) => {
   MAP = data.map;
   players = data.players;
   ammoBoxes = data.ammoBoxes || [];
+  medkits = data.medkits || [];
   const p = players[myId];
   if (p) { me.x = p.x; me.y = p.y; me.angle = p.angle; me.health = p.health; }
 
@@ -72,18 +74,27 @@ socket.on('state', (serverPlayers) => {
   }
 });
 
-// События сбора и респауна патронов
 socket.on('ammoPicked', (data) => {
   const box = ammoBoxes.find(b => b.id === data.boxId);
   if (box) box.active = false;
-  if (data.playerId === myId) {
-    me.reserveAmmo = Math.min(99, me.reserveAmmo + 16); // Добавляем +16 патронов
-  }
+  if (data.playerId === myId) me.reserveAmmo = Math.min(99, me.reserveAmmo + 16);
 });
 
 socket.on('ammoRespawned', (serverBox) => {
   const box = ammoBoxes.find(b => b.id === serverBox.id);
   if (box) box.active = true;
+});
+
+// Триггеры сбора аптечек
+socket.on('medkitPicked', (data) => {
+  const kit = medkits.find(k => k.id === data.kitId);
+  if (kit) kit.active = false;
+  if (data.playerId === myId) me.health = data.health;
+});
+
+socket.on('medkitRespawned', (serverKit) => {
+  const kit = medkits.find(k => k.id === serverKit.id);
+  if (kit) kit.active = true;
 });
 
 socket.on('playerJoined', (p) => { players[p.id] = p; });
@@ -116,7 +127,7 @@ function update(dt) {
   const moveSpeed = 3 * dt;
   const rotSpeed = 2.2 * dt;
 
-  if (weaponRecoil > 0) weaponRecoil -= dt * 6;
+  if (weaponRecoil > 0) weaponRecoil -= dt * 7; // Чуть быстрее возврат пистолета
   if (weaponRecoil < 0) weaponRecoil = 0;
 
   if (shootCooldown > 0) shootCooldown -= dt;
@@ -217,27 +228,19 @@ function render() {
     ctx.fillRect(i, startY, 1, wallHeight); 
   }
 
-  // --- СБОР ВСЕХ СПРАЙТОВ (ИГРОКИ + ЯЩИКИ) ДЛЯ СОРТИРОВКИ ГЛУБИНЫ ---
+  // --- СОРТИРОВКА ОБЪЕКТОВ ---
   const sprites = [];
-  
-  // Добавляем врагов
   Object.values(players).forEach(p => {
-    if (p.id !== myId && p.alive) {
-      sprites.push({ x: p.x, y: p.y, type: 'player', data: p });
-    }
+    if (p.id !== myId && p.alive) sprites.push({ x: p.x, y: p.y, type: 'player', data: p });
   });
-
-  // Добавляем активные ящики
   ammoBoxes.forEach(b => {
-    if (b.active) {
-      sprites.push({ x: b.x, y: b.y, type: 'ammo', data: b });
-    }
+    if (b.active) sprites.push({ x: b.x, y: b.y, type: 'ammo', data: b });
+  });
+  medkits.forEach(k => {
+    if (k.active) sprites.push({ x: k.x, y: k.y, type: 'medkit', data: k });
   });
 
-  // Сортируем: сначала рисуем дальние объекты, потом ближние
   sprites.sort((a, b) => Math.hypot(b.x - me.x, b.y - me.y) - Math.hypot(a.x - me.x, a.y - me.y));
-  
-  // Отрисовка
   sprites.forEach(s => drawSprite(s, depthBuffer));
 
   if (me.alive) {
@@ -245,14 +248,16 @@ function render() {
     drawMuzzleFlash();
   }
   drawHUD();
+  drawMinimap(); // Рисуем карту поверх всего экрана
 }
+function distTo(p) { return Math.hypot(p.x - me.x, p.y - me.y); }
 function normalizeAngle(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a < -Math.PI) a += 2 * Math.PI;
   return a;
 }
 
-// Универсальная отрисовка спрайтов
+// Отрисовка игрока в виде курицы и других предметов
 function drawSprite(sprite, depthBuffer) {
   const dx = sprite.x - me.x, dy = sprite.y - me.y;
   const dist = Math.hypot(dx, dy);
@@ -264,91 +269,157 @@ function drawSprite(sprite, depthBuffer) {
   const size = Math.min(H * 2, H / (dist + 0.0001)) * 0.6;
   const col = Math.floor(screenX);
 
-  if (col >= 0 && col < NUM_RAYS && depthBuffer[col] < dist) return; // Скрыто за стеной
+  if (col >= 0 && col < NUM_RAYS && depthBuffer[col] < dist) return;
 
   ctx.save();
   if (sprite.type === 'player') {
-    // Отрисовка игрока (Твой оригинальный код)
-    const p = sprite.data;
-    ctx.fillStyle = '#c0392b';
-    ctx.fillRect(screenX - size / 4, H / 2 - size / 2, size / 2, size);
-    ctx.fillStyle = '#111';
-    ctx.fillRect(screenX - size / 6, H / 2 - size / 2, size / 3, size / 4);
+    // --- СПРАЙТ КУРИЦЫ ИЗ ГЕОМЕТРИИ (РЕТРО-СТИЛЬ) ---
+    const cx = screenX;
+    const cy = H / 2 + size * 0.1;
+    const w = size * 0.4;
+    const h = size * 0.5;
 
+    // Тело курицы (белое)
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+
+    // Гребешок (красный)
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillRect(cx - w / 4, cy - h / 2 - h * 0.2, w / 2, h * 0.2);
+
+    // Клюв (желтый)
+    ctx.fillStyle = '#f1c40f';
+    ctx.fillRect(cx - w * 0.1, cy - h * 0.2, w * 0.4, h * 0.15);
+
+    // Глаз (черный)
+    ctx.fillStyle = '#111111';
+    ctx.fillRect(cx - w * 0.2, cy - h * 0.3, w * 0.1, h * 0.1);
+
+    // Текст над курицей
     ctx.fillStyle = '#fff';
     ctx.font = '12px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(p.name || '', screenX, H / 2 - size / 2 - 8);
+    ctx.fillText(sprite.data.name || '', screenX, cy - h / 2 - 25);
 
     const hpWidth = size / 2;
     ctx.fillStyle = '#222';
-    ctx.fillRect(screenX - hpWidth / 2, H / 2 - size / 2 - 18, hpWidth, 4);
+    ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth, 4);
     ctx.fillStyle = '#2ecc71';
-    ctx.fillRect(screenX - hpWidth / 2, H / 2 - size / 2 - 18, hpWidth * Math.max(0, (p.health || 0) / 100), 4);
+    ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth * Math.max(0, (sprite.data.health || 0) / 100), 4);
   } 
   else if (sprite.type === 'ammo') {
-    // --- ОТРИСОВКА ЯЩИКА С ПАТРОНАМИ (ЯРКИЙ РЕТРО-СТИЛЬ) ---
-    const boxWidth = size * 0.4;
-    const boxHeight = size * 0.25;
-    const bx = screenX - boxWidth / 2;
-    const by = H / 2 + size * 0.2; // Размещаем на полу
-
-    // Корпус ящика (Зелено-желтый военный контейнер)
-    ctx.fillStyle = '#d35400';
-    ctx.fillRect(bx, by, boxWidth, boxHeight);
-    ctx.strokeStyle = '#f1c40f';
-    ctx.lineWidth = Math.max(1, size * 0.02);
-    ctx.strokeRect(bx, by, boxWidth, boxHeight);
-
-    // Надпись AMMO поверх контейнера
-    ctx.fillStyle = '#f1c40f';
-    ctx.font = `bold ${Math.max(8, size * 0.1)}px monospace`;
-    ctx.textAlign = 'center';
+    const boxWidth = size * 0.4, boxHeight = size * 0.25;
+    const bx = screenX - boxWidth / 2, by = H / 2 + size * 0.2;
+    ctx.fillStyle = '#d35400'; ctx.fillRect(bx, by, boxWidth, boxHeight);
+    ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = Math.max(1, size * 0.02); ctx.strokeRect(bx, by, boxWidth, boxHeight);
+    ctx.fillStyle = '#f1c40f'; ctx.font = `bold ${Math.max(8, size * 0.1)}px monospace`; ctx.textAlign = 'center';
     ctx.fillText('AMMO', screenX, by + boxHeight * 0.7);
+  }
+  else if (sprite.type === 'medkit') {
+    // --- ОТРИСОВКА АПТЕЧКИ ---
+    const kw = size * 0.35, kh = size * 0.35;
+    const kx = screenX - kw / 2, ky = H / 2 + size * 0.15;
+
+    ctx.fillStyle = '#ecf0f1'; // Белый корпус
+    ctx.fillRect(kx, ky, kw, kh);
+    ctx.strokeStyle = '#bdc3c7'; ctx.strokeRect(kx, ky, kw, kh);
+
+    // Красный медицинский крест
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillRect(kx + kw * 0.4, ky + kh * 0.15, kw * 0.2, kh * 0.7);
+    ctx.fillRect(kx + kw * 0.15, ky + kh * 0.4, kw * 0.7, kh * 0.2);
   }
   ctx.restore();
 }
 
+// --- НОВАЯ МОДЕЛЬ ОРУЖИЯ (ПИСТОЛЕТ) ---
 function drawWeapon() {
   const ox = W / 2;
-  const oy = H + (weaponRecoil * 50); 
+  const oy = H + (weaponRecoil * 35); // Меньше ход отдачи у пистолета
 
   ctx.save();
   if (reloadTimer > 0) {
-    ctx.fillStyle = '#e74c3c';
-    ctx.font = 'bold 16px monospace';
-    ctx.textAlign = 'center';
+    ctx.fillStyle = '#e74c3c'; ctx.font = 'bold 16px monospace'; ctx.textAlign = 'center';
     ctx.fillText('ПЕРЕЗАРЯДКА...', ox, H - 160);
   }
 
-  ctx.fillStyle = '#2c3e50';
-  ctx.fillRect(ox - 30, oy - 90, 60, 90);
+  // Рукоять пистолета
+  ctx.fillStyle = '#111111';
+  ctx.fillRect(ox - 10, oy - 60, 20, 60);
+
+  // Ствол и затвор пистолета (серая сталь)
   ctx.fillStyle = '#7f8c8d';
-  ctx.fillRect(ox - 14, oy - 140, 12, 70);
-  ctx.fillRect(ox + 2, oy - 140, 12, 70);
-  ctx.fillStyle = '#111';
-  ctx.fillRect(ox - 12, oy - 140, 8, 5);
-  ctx.fillRect(ox + 4, oy - 140, 8, 5);
+  ctx.fillRect(ox - 8, oy - 110, 16, 60);
+  
+  // Мушка и лазерный прицел
+  ctx.fillStyle = '#2c3e50';
+  ctx.fillRect(ox - 6, oy - 115, 12, 10);
+  ctx.fillStyle = '#e74c3c'; // Красная точка лазера на дуле
+  ctx.fillRect(ox - 2, oy - 115, 4, 4);
   ctx.restore();
 }
 
 function drawMuzzleFlash() {
   if (muzzleFlashTimer <= 0) return;
-  const ox = W / 2;
-  const oy = H - 140 + (weaponRecoil * 50);
+  const ox = W / 2, oy = H - 115 + (weaponRecoil * 35);
   ctx.save();
   ctx.fillStyle = 'rgba(241, 196, 15, 0.8)';
-  ctx.beginPath(); ctx.arc(ox, oy, 35, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(ox, oy, 20, 0, Math.PI * 2); ctx.fill(); // Вспышка пистолета меньше
   ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.arc(ox, oy, 15, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(ox, oy, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+// --- ОТРИСОВКА 2D-МИНИКАРТЫ (РАДАР) ---
+function drawMinimap() {
+  if (!MAP.length) return;
+  
+  const scale = 6; // Размер одной ячейки на карте в пикселях
+  const mx = 10, my = 10; // Координаты карты на экране
+
+  ctx.save();
+  // Фон подложки радара
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(mx, my, MAP[0].length * scale, MAP.length * scale);
+
+  // Стены
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+  for (let r = 0; r < MAP.length; r++) {
+    for (let c = 0; c < MAP[r].length; c++) {
+      if (MAP[r][c] === 1) {
+        ctx.fillRect(mx + c * scale, my + r * scale, scale - 1, scale - 1);
+      }
+    }
+  }
+
+  // Точки предметов патронов и аптечек
+  ammoBoxes.forEach(b => { if (b.active) { ctx.fillStyle = '#e67e22'; ctx.fillRect(mx + b.x * scale - 1, my + b.y * scale - 1, 3, 3); } });
+  medkits.forEach(k => { if (k.active) { ctx.fillStyle = '#2ecc71'; ctx.fillRect(mx + k.x * scale - 1, my + k.y * scale - 1, 3, 3); } });
+
+  // Точки врагов (игроков)
+  ctx.fillStyle = '#e74c3c';
+  Object.values(players).forEach(p => {
+    if (p.id !== myId && p.alive) {
+      ctx.fillRect(mx + p.x * scale - 2, my + p.y * scale - 2, 4, 4);
+    }
+  });
+
+  // Моя позиция и луч направления взгляда
+  const pSize = 4;
+  const px = mx + me.x * scale;
+  const py = my + me.y * scale;
+
+  ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(px, py);
+  ctx.lineTo(px + Math.cos(me.angle) * 12, py + Math.sin(me.angle) * 12); ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(px, py, pSize / 2, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
 function drawHUD() {
-  ctx.textAlign = 'left';
-  ctx.font = '18px monospace';
-  ctx.fillStyle = '#fff';
-  
+  ctx.textAlign = 'left'; ctx.font = '18px monospace'; ctx.fillStyle = '#fff';
   ctx.fillText(`AMMO: ${me.ammo} / ${me.reserveAmmo}`, 10, H - 20);
   ctx.fillText('HP: ' + Math.max(0, Math.floor(me.health)), 200, H - 20);
   ctx.fillText('Убийства: ' + me.kills + '   Смерти: ' + me.deaths, 10, H - 45);
@@ -370,10 +441,10 @@ function shoot() {
   }
 
   me.ammo--;
-  shootCooldown = 0.4;
+  shootCooldown = 0.3; // У пистолета кулдаун чуть меньше
   weaponRecoil = 1.0;
-  muzzleFlashTimer = 0.08; 
-  hitMarkerTimer = 0.15;   
+  muzzleFlashTimer = 0.06; 
+  hitMarkerTimer = 0.12;   
 
   const { dist: wallDist } = castRay(me.angle);
   let best = null, bestDist = Infinity;
@@ -395,16 +466,13 @@ function shoot() {
   if (best) socket.emit('shoot', { targetId: best, damage: 25 });
   
   if (me.ammo === 0 && me.reserveAmmo > 0) {
-    setTimeout(() => { if (me.alive && me.ammo === 0) reloadTimer = 1.2; }, 400);
+    setTimeout(() => { if (me.alive && me.ammo === 0) reloadTimer = 1.2; }, 300);
   }
 }
 
 function showMessage(text) {
   const el = document.getElementById('message');
-  if (el) {
-    el.textContent = text + ' — возрождение через 3 сек...';
-    el.style.display = 'block';
-  }
+  if (el) { el.textContent = text + ' — возрождение через 3 сек...'; el.style.display = 'block'; }
 }
 function hideMessage() {
   const el = document.getElementById('message');
