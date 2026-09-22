@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DOOM-подобная игра — мультиплеер</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="container">
+  <canvas id="game" width="800" height="500"></canvas>
+  <div id="message"></div>
+  <div id="hint">WASD — движение &nbsp;|&nbsp; мышь — поворот (клик по экрану — захват курсора) &nbsp;|&nbsp; клик — выстрел</div>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
