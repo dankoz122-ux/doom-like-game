@@ -57,6 +57,14 @@ canvas.addEventListener('mousedown', (e) => {
 document.addEventListener('mouseup', () => { isMouseDown = false; });
 window.addEventListener('blur', () => { isMouseDown = false; });
 document.addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) me.angle += e.movementX * 0.0025; });
+// --- ИСПРАВЛЕННЫЙ НАДЁЖНЫЙ КВАРТАЛ ЧТЕНИЯ КАРТЫ (УСТРАНЯЕТ ЧЁРНЫЙ ЭКРАН) ---
+function isWall(x, y) {
+  const mx = Math.floor(x), my = Math.floor(y);
+  if (my < 0 || my >= MAP.length || mx < 0 || !MAP[my] || mx >= MAP[my].length) return true;
+  const cell = MAP[my][mx];
+  return cell === 1 || cell === '1';
+}
+
 // ---------- СЕТЬ ----------
 socket.on('init', (data) => {
   myId = data.id; MAP = data.map; players = data.players; ammoBoxes = data.ammoBoxes || []; medkits = data.medkits || [];
@@ -110,8 +118,6 @@ socket.on('rpg_explosion_fx', (data) => { createExplosionParticles(data.x, data.
 socket.on('death', (data) => {
   if (data.targetId === myId) {
     me.alive = false; isMouseDown = false;
-    
-    // Получаем точное имя оружия, переданное сервером из кастомного пакета выстрела врага
     killerWeaponName = data.weaponName || 'НЕИЗВЕСТНОГО ОРУЖИЯ';
     showMessage(`Вас убил ${data.killerName} из ${killerWeaponName}`);
   }
@@ -126,7 +132,6 @@ socket.on('respawn', (data) => {
   }
 });
 
-// --- СИСТЕМЫ ЧАСТИЦ ---
 function createWallSparks(x, y) {
   for (let i = 0; i < 8; i++) {
     particles.push({
@@ -172,7 +177,6 @@ function update(dt) {
     }
   }
 
-  // Автоматический огонь для автомата при удержании ЛКМ
   if (isMouseDown && me.currentWeapon === 'rifle' && shootCooldown <= 0 && reloadTimer <= 0) {
     shoot();
   }
@@ -361,6 +365,7 @@ function shoot() {
     let explosionX = endX, explosionY = endY; if (targetId) { explosionX = players[targetId].x; explosionY = players[targetId].y; }
     createExplosionParticles(explosionX, explosionY);
     
+    // Передаем точное имя оружия wConf.name ('РПГ-7 (ОДНОРАЗОВЫЙ)') бэкенду
     socket.emit('shoot', { isRpg: true, explX: explosionX, explY: explosionY, weaponName: wConf.name });
     setTimeout(() => { if (me.alive && me.currentWeapon === 'rpg') me.currentWeapon = 'pistol'; }, 500); return;
   }
@@ -377,6 +382,7 @@ function shoot() {
     if (Math.abs(angleToPlayer) < 0.06 && d < wallDist && d < bestDist) { best = id; bestDist = d; }
   }
   
+  // Явно шлём weaponName для пистолета и автомата
   if (best) socket.emit('shoot', { targetId: best, damage: wConf.dmg, weaponName: wConf.name });
   if (me.ammo[me.currentWeapon] === 0 && me.reserveAmmo > 0) { setTimeout(() => { if (me.alive && me.ammo[me.currentWeapon] === 0) initiateReload(); }, wConf.cd * 1000); }
 }
