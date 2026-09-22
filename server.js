@@ -9,7 +9,6 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 1 = стена, 0 = проход. Классическая "коридорная" карта в стиле Doom.
 const MAP = [
   [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
   [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
@@ -26,7 +25,7 @@ const MAP = [
   [1,0,0,1,0,1,1,1,1,1,1,1,0,1,0,1],
   [1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1],
   [1,0,1,1,1,1,1,1,1,1,0,1,1,1,0,1],
-  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
 ];
 
 const SPAWNS = [
@@ -42,10 +41,11 @@ const ammoBoxes = [
   { id: 'b5', x: 5.5, y: 13.5, active: true }
 ];
 
+// Координаты m2 (было 12.5, 3.5 -> стена) и m3 (было 3.5, 11.5 -> стена) ИСПРАВЛЕНЫ на свободные зоны!
 const medkits = [
   { id: 'm1', x: 3.5, y: 3.5, active: true },
-  { id: 'm2', x: 12.5, y: 3.5, active: true },
-  { id: 'm3', x: 3.5, y: 11.5, active: true },
+  { id: 'm2', x: 11.5, y: 3.5, active: true }, 
+  { id: 'm3', x: 2.5, y: 11.5, active: true },
   { id: 'm4', x: 12.5, y: 11.5, active: true }
 ];
 
@@ -80,7 +80,6 @@ io.on('connection', (socket) => {
     if (typeof data.x === 'number' && typeof data.y === 'number' && typeof data.angle === 'number') {
       p.x = data.x; p.y = data.y; p.angle = data.angle;
 
-      // Проверка сбора патронов
       for (const box of ammoBoxes) {
         if (box.active && Math.hypot(p.x - box.x, p.y - box.y) < 0.5) {
           box.active = false;
@@ -89,7 +88,6 @@ io.on('connection', (socket) => {
         }
       }
 
-      // Проверка сбора аптечек
       for (const kit of medkits) {
         if (kit.active && p.health < 100 && Math.hypot(p.x - kit.x, p.y - kit.y) < 0.5) {
           kit.active = false;
@@ -107,7 +105,9 @@ io.on('connection', (socket) => {
     const target = players[data.targetId];
     if (!target || !target.alive || data.targetId === socket.id) return;
 
-    target.health -= data.damage || 25;
+    // Принимаем урон динамически от оружия
+    const dmg = typeof data.damage === 'number' ? data.damage : 25;
+    target.health -= dmg;
     io.emit('damage', { targetId: target.id, health: target.health, byId: socket.id });
 
     if (target.health <= 0) {
