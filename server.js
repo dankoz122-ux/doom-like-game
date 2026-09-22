@@ -9,23 +9,25 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Карта изменена на массив текстовых строк, чтобы маркдаун её не стирал.
+// '1' = стена, '0' = свободный проход. Коридорный лабиринт 16x16.
 const MAP = [
-  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
-  [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
-  [1,0,1,1,0,0,1,0,1,1,1,1,1,0,0,1],
-  [1,0,1,0,0,0,0,0,1,0,0,0,1,0,0,1],
-  [1,0,1,0,1,1,1,1,1,0,1,0,1,0,0,1],
-  [1,0,0,0,1,0,0,0,0,0,1,0,0,0,0,1],
-  [1,0,1,0,1,0,1,1,1,0,1,1,1,1,0,1],
-  [1,0,1,0,0,0,1,0,0,0,0,0,0,1,0,1],
-  [1,0,1,1,1,1,1,0,1,1,1,1,0,1,0,1],
-  [1,0,0,0,0,0,0,0,1,0,0,1,0,0,0,1],
-  [1,1,1,1,0,1,0,1,1,0,1,1,1,1,0,1],
-  [1,0,0,1,0,1,0,0,0,0,0,0,0,1,0,1],
-  [1,0,0,1,0,1,1,1,1,1,1,1,0,1,0,1],
-  [1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1],
-  [1,0,1,1,1,1,1,1,1,1,0,1,1,1,0,1],
-  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  "1111111111111111",
+  "1000001000000001",
+  "1011001011111001",
+  "1010000010001001",
+  "1010111110101001",
+  "1000100000100001",
+  "1010101110111101",
+  "1010001000000101",
+  "1011111011110101",
+  "1000000010010001",
+  "1111010110111101",
+  "1001010000000101",
+  "1001011111110101",
+  "1000000000010001",
+  "1011111111011101",
+  "1111111111111111"
 ];
 
 const SPAWNS = [
@@ -41,13 +43,15 @@ const ammoBoxes = [
   { id: 'b5', x: 5.5, y: 13.5, active: true }
 ];
 
-// Координаты m2 (было 12.5, 3.5 -> стена) и m3 (было 3.5, 11.5 -> стена) ИСПРАВЛЕНЫ на свободные зоны!
 const medkits = [
   { id: 'm1', x: 3.5, y: 3.5, active: true },
   { id: 'm2', x: 11.5, y: 3.5, active: true }, 
   { id: 'm3', x: 2.5, y: 11.5, active: true },
   { id: 'm4', x: 12.5, y: 11.5, active: true }
 ];
+
+// Ровно 1 экземпляр РПГ на карте
+let rpgWeapon = { id: 'rpg_pickup', x: 7.5, y: 5.5, active: true };
 
 const players = {};
 
@@ -63,9 +67,10 @@ io.on('connection', (socket) => {
     name: 'Player' + socket.id.slice(0, 4), alive: true
   };
 
-  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits });
+  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits, rpgWeapon });
   socket.broadcast.emit('playerJoined', players[socket.id]);
-  console.log('Игрок подключился:', socket.id);
+
+  socket.on('ping_test', () => { socket.emit('pong_test'); });
 
   socket.on('setName', (name) => {
     if (players[socket.id]) {
@@ -96,37 +101,76 @@ io.on('connection', (socket) => {
           setTimeout(() => { kit.active = true; io.emit('medkitRespawned', kit); }, 15000);
         }
       }
+
+      if (rpgWeapon.active && Math.hypot(p.x - rpgWeapon.x, p.y - rpgWeapon.y) < 0.5) {
+        rpgWeapon.active = false;
+        io.emit('rpgPicked', { playerId: socket.id });
+        setTimeout(() => {
+          rpgWeapon.active = true;
+          io.emit('rpgRespawned', rpgWeapon);
+        }, 25000);
+      }
     }
   });
 
   socket.on('shoot', (data) => {
     const shooter = players[socket.id];
     if (!shooter || !shooter.alive) return;
-    const target = players[data.targetId];
-    if (!target || !target.alive || data.targetId === socket.id) return;
 
-    // Принимаем урон динамически от оружия
-    const dmg = typeof data.damage === 'number' ? data.damage : 25;
-    target.health -= dmg;
-    io.emit('damage', { targetId: target.id, health: target.health, byId: socket.id });
+    if (data.isRpg) {
+      const explosionX = data.explX;
+      const explosionY = data.explY;
+      io.emit('rpg_explosion_fx', { x: explosionX, y: explosionY });
 
-    if (target.health <= 0) {
-      target.alive = false; target.deaths++; shooter.kills++;
-      io.emit('death', { targetId: target.id, byId: socket.id, killerName: shooter.name });
+      Object.values(players).forEach(target => {
+        if (!target.alive) return;
+        const distToExplosion = Math.hypot(target.x - explosionX, target.y - explosionY);
+        
+        if (distToExplosion < 3.0) {
+          const damage = Math.floor(100 * (1 - distToExplosion / 3.0));
+          if (damage <= 0) return;
 
-      setTimeout(() => {
-        if (!players[target.id]) return;
-        const sp = randomSpawn();
-        target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
-        io.emit('respawn', { id: target.id, x: target.x, y: target.y });
-      }, 3000);
+          target.health -= damage;
+          io.emit('damage', { targetId: target.id, health: target.health, byId: socket.id });
+
+          if (target.health <= 0) {
+            target.alive = false; target.deaths++; 
+            if (target.id !== shooter.id) shooter.kills++;
+            io.emit('death', { targetId: target.id, byId: socket.id, killerName: shooter.name });
+
+            setTimeout(() => {
+              if (!players[target.id]) return;
+              const sp = randomSpawn();
+              target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
+              io.emit('respawn', { id: target.id, x: target.x, y: target.y });
+            }, 3000);
+          }
+        }
+      });
+    } else {
+      const target = players[data.targetId];
+      if (!target || !target.alive || data.targetId === socket.id) return;
+
+      target.health -= data.damage || 25;
+      io.emit('damage', { targetId: target.id, health: target.health, byId: socket.id });
+
+      if (target.health <= 0) {
+        target.alive = false; target.deaths++; shooter.kills++;
+        io.emit('death', { targetId: target.id, byId: socket.id, killerName: shooter.name });
+
+        setTimeout(() => {
+          if (!players[target.id]) return;
+          const sp = randomSpawn();
+          target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
+          io.emit('respawn', { id: target.id, x: target.x, y: target.y });
+        }, 3000);
+      }
     }
   });
 
   socket.on('disconnect', () => {
     delete players[socket.id];
     io.emit('playerLeft', socket.id);
-    console.log('Игрок отключился:', socket.id);
   });
 });
 
