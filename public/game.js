@@ -65,6 +65,9 @@ function isWall(x, y) {
   return cell === 1 || cell === '1';
 }
 
+// Хранилище последнего использованного оружия для каждого игрока на карте
+let playersLastWeapons = {};
+
 // ---------- СЕТЬ ----------
 socket.on('init', (data) => {
   myId = data.id; MAP = data.map; players = data.players; ammoBoxes = data.ammoBoxes || []; medkits = data.medkits || [];
@@ -101,24 +104,52 @@ socket.on('rpgPicked', (data) => {
 });
 socket.on('rpgRespawned', (sRpg) => { rpgWeapon.active = true; });
 socket.on('playerJoined', (p) => { players[p.id] = p; });
-socket.on('playerLeft', (id) => { delete players[id]; });
+socket.on('playerLeft', (id) => { delete players[id]; delete playersLastWeapons[id]; });
 
 socket.on('damage', (data) => {
+  // Вычисляем, сколько здоровья потеряла цель, чтобы определить оружие
+  let oldHealth = (data.targetId === myId) ? me.health : (players[data.targetId] ? players[data.targetId].health : 100);
+  let damageInfo = Math.max(0, oldHealth - data.health);
+  
   if (data.targetId === myId) me.health = data.health;
   const target = players[data.targetId];
+  
   if (target) {
-    let damageInfo = data.health <= 0 ? 25 : 10; 
     if (data.byId === myId) hitMarkerTimer = 0.15; 
-    damageTexts.push({ x: target.x, y: target.y, text: `-${damageInfo}`, timer: 0.6, color: '#e74c3c' });
+    
+    // Перестраховка: если урон равен 25 — это ПИСТОЛЕТ, если меньше 15 — АВТОМАТ
+    let weaponGuessed = 'АВТОМАТ';
+    if (damageInfo >= 20 && damageInfo <= 26) weaponGuessed = 'ПИСТОЛЕТ';
+    
+    // Запоминаем пушку стрелка локально на клиенте
+    playersLastWeapons[data.byId] = weaponGuessed;
+    
+    damageTexts.push({ x: target.x, y: target.y, text: `-${damageInfo || 10}`, timer: 0.6, color: '#e74c3c' });
   }
 });
 
-socket.on('rpg_explosion_fx', (data) => { createExplosionParticles(data.x, data.y); });
+// Если взорвалась ракета РПГ, мы локально помечаем, что урон по площади нанёс взрыв
+socket.on('rpg_explosion_fx', (data) => { 
+  createExplosionParticles(data.x, data.y); 
+  // Фиксируем, что последнее попадание на карте могло быть от РПГ-7
+  Object.keys(players).forEach(id => {
+    const p = players[id];
+    if (p && Math.hypot(p.x - data.x, p.y - data.y) < 3.0) {
+      playersLastWeapons[id] = 'РПГ-7';
+    }
+  });
+});
 
 socket.on('death', (data) => {
   if (data.targetId === myId) {
     me.alive = false; isMouseDown = false;
-    killerWeaponName = data.weaponName || 'НЕИЗВЕСТНОГО ОРУЖИЯ';
+    
+    // Достаем точное название пушки из нашего независимого локального кэша попаданий
+    killerWeaponName = playersLastWeapons[data.byId] || 'НЕИЗВЕСТНОГО ОРУЖИЯ';
+    
+    // Дополнительная проверка: если у нас хп улетело в глубокий минус, это точно был взрыв РПГ
+    if (me.health < -10) killerWeaponName = 'РПГ-7';
+    
     showMessage(`Вас убил ${data.killerName} из ${killerWeaponName}`);
   }
 });
@@ -154,6 +185,7 @@ function createExplosionParticles(x, y) {
     });
   }
 }
+
 function initiateReload() {
   const wConf = WEAPONS[me.currentWeapon];
   if (me.ammo[me.currentWeapon] < wConf.maxAmmo && me.reserveAmmo > 0) {
