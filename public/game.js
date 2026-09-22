@@ -27,6 +27,9 @@ const me = {
 
 let weaponRecoil = 0, muzzleFlashTimer = 0, hitMarkerTimer = 0, shootCooldown = 0, reloadTimer = 0;        
 
+// Переменная для отслеживания зажатого клика (нужна для автомата)
+let isMouseDown = false;
+
 // ---------- ВВОД ----------
 const keys = {};
 document.addEventListener('keydown', (e) => { 
@@ -42,7 +45,25 @@ document.addEventListener('keydown', (e) => {
 });
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) { canvas.requestPointerLock(); } else { shoot(); } });
+// Отслеживание кликов и зажатий для автоматического огня
+canvas.addEventListener('mousedown', (e) => {
+  if (document.pointerLockElement !== canvas) {
+    canvas.requestPointerLock();
+  } else {
+    isMouseDown = true;
+    shoot(); // Первый выстрел срабатывает мгновенно при нажатии
+  }
+});
+
+document.addEventListener('mouseup', () => {
+  isMouseDown = false;
+});
+
+// Если фокус с окна пропал, сбрасываем зажатие курсора
+window.addEventListener('blur', () => {
+  isMouseDown = false;
+});
+
 document.addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) me.angle += e.movementX * 0.0025; });
 
 // ---------- СЕТЬ ----------
@@ -85,7 +106,7 @@ socket.on('playerJoined', (p) => { players[p.id] = p; });
 socket.on('playerLeft', (id) => { delete players[id]; });
 socket.on('damage', (data) => { if (data.targetId === myId) me.health = data.health; });
 socket.on('rpg_explosion_fx', () => { hitMarkerTimer = 0.20; });
-socket.on('death', (data) => { if (data.targetId === myId) { me.alive = false; showMessage('Вас убил ' + data.killerName); } });
+socket.on('death', (data) => { if (data.targetId === myId) { me.alive = false; isMouseDown = false; showMessage('Вас убил ' + data.killerName); } });
 
 socket.on('respawn', (data) => {
   if (data.id === myId) {
@@ -121,6 +142,12 @@ function update(dt) {
       const needed = wConf.maxAmmo - me.ammo[me.currentWeapon]; const transfer = Math.min(needed, me.reserveAmmo);
       me.ammo[me.currentWeapon] += transfer; me.reserveAmmo -= transfer; weaponRecoil = 0;
     }
+  }
+
+  // --- ЛОГИКА АВТОМАТИЧЕСКОЙ СТРЕЛЬБЫ ЧЕРЕЗ ЗАЖАТИЕ ---
+  // Каждые 0.1 секунды (cd автомата), если зажат клик и выбран автомат, вызываем стрельбу
+  if (isMouseDown && me.currentWeapon === 'rifle' && shootCooldown <= 0 && reloadTimer <= 0) {
+    shoot();
   }
 
   if (muzzleFlashTimer > 0) muzzleFlashTimer -= dt; if (hitMarkerTimer > 0) hitMarkerTimer -= dt;
