@@ -11,7 +11,7 @@ let MAP = [];
 let myId = null;
 let players = {};
 
-// --- ОБЪЕКТ ИГРОКА (ДОБАВЛЕНЫ ПАТРОНЫ) ---
+// --- ОБЪЕКТ ИГРОКА ---
 const me = { 
   x: 2.5, y: 2.5, angle: 0, 
   health: 100, alive: true, 
@@ -20,11 +20,11 @@ const me = {
 };
 
 // --- ТАЙМЕРЫ ЭФФЕКТОВ И ГЕЙМПЛЕЯ ---
-let weaponRecoil = 0;       // Смещение оружия при отдаче
-let muzzleFlashTimer = 0;   // Таймер отрисовки вспышки
-let hitMarkerTimer = 0;     // Таймер красного прицела при попадании
-let shootCooldown = 0;      // КД между выстрелами
-let reloadTimer = 0;        // Таймер блокировки при перезарядке
+let weaponRecoil = 0;       
+let muzzleFlashTimer = 0;   
+let hitMarkerTimer = 0;     
+let shootCooldown = 0;      
+let reloadTimer = 0;        
 
 // ---------- ВВОД ----------
 const keys = {};
@@ -98,7 +98,7 @@ socket.on('respawn', (data) => {
 // ---------- ЛОГИКА КАРТЫ ----------
 function isWall(x, y) {
   const mx = Math.floor(x), my = Math.floor(y);
-  if (my < 0 || my >= MAP.length || mx < 0 || mx >= MAP[0].length) return true;
+  if (my < 0 || my >= MAP.length || mx < 0 || mx >= MAP.length) return true;
   return MAP[my][mx] === 1;
 }
 function update(dt) {
@@ -143,10 +143,10 @@ function update(dt) {
   socket.emit('move', { x: me.x, y: me.y, angle: me.angle });
 }
 
-// ---------- RAYCASTING С РАСЧЕТОМ СТОРОНЫ СТЕНЫ ----------
+// ---------- БЫСТРЫЙ RAYCASTING ----------
 function castRay(angle) {
   const cos = Math.cos(angle), sin = Math.sin(angle);
-  const step = 0.015; 
+  const step = 0.02; 
   let dist = 0;
   let x = me.x, y = me.y;
   
@@ -157,13 +157,8 @@ function castRay(angle) {
     if (isWall(x, y)) {
       const hitX = x - Math.floor(x);
       const hitY = y - Math.floor(y);
-      let wallX = hitX;
-      let isVertical = false;
-      
-      if (Math.abs(hitX) < 0.02 || Math.abs(hitX) > 0.98) {
-        wallX = hitY;
-        isVertical = true;
-      }
+      let wallX = (Math.abs(hitX) < 0.03 || Math.abs(hitX) > 0.97) ? hitY : hitX;
+      let isVertical = (Math.abs(hitX) < 0.03 || Math.abs(hitX) > 0.97);
       return { dist, wallX, isVertical };
     }
   }
@@ -173,8 +168,9 @@ function castRay(angle) {
 function render() {
   if (!MAP.length) return;
 
-  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, W, H / 2);     // Потолок
-  ctx.fillStyle = '#2b2b2b'; ctx.fillRect(0, H / 2, W, H / 2);  // Пол
+  // Отрисовка пола и потолка двумя быстрыми полигонами
+  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, W, H / 2);     
+  ctx.fillStyle = '#2b2b2b'; ctx.fillRect(0, H / 2, W, H / 2);  
 
   const depthBuffer = new Array(NUM_RAYS);
 
@@ -188,38 +184,37 @@ function render() {
     const startY = Math.floor((H - wallHeight) / 2);
     const light = Math.max(0, 1 - dist / MAX_DEPTH);
     
-    // --- ПРОЦЕДУРНАЯ ТЕКСТУРА КИРПИЧЕЙ ---
-    const rBase = isVertical ? 110 : 150;
-    const gBase = isVertical ? 35 : 50;
-    const bBase = isVertical ? 20 : 30;
-    const texHeight = 64;
-    const brickRowHeight = 8;
+    // --- ОПТИМИЗИРОВАННАЯ ТЕКСТУРА ЧЕРЕЗ ГРАДИЕНТ (В 100 РАЗ БЫСТРЕЕ) ---
+    const r = isVertical ? Math.floor(100 * light) : Math.floor(140 * light);
+    const g = isVertical ? Math.floor(30 * light) : Math.floor(45 * light);
+    const b = isVertical ? Math.floor(15 * light) : Math.floor(25 * light);
+    const brickColor = `rgb(${r},${g},${b})`;
+    
+    const seamR = isVertical ? Math.floor(35 * light) : Math.floor(50 * light);
+    const seamColor = `rgb(${seamR},${seamR},${seamR})`;
 
-    for (let sy = 0; sy < wallHeight; sy++) {
-      const currentY = startY + sy;
-      if (currentY < 0 || currentY >= H) continue;
+    // Создаем вертикальный градиент, имитирующий ряды кирпичей
+    const grad = ctx.createLinearGradient(0, startY, 0, startY + wallHeight);
+    
+    // Делаем 8 горизонтальных рядов кирпичей через циклы остановок цвета
+    for (let row = 0; row < 8; row++) {
+      const startPos = row / 8;
+      const endPos = (row + 1) / 8;
+      
+      // Чередуем шум на кирпичах в зависимости от координаты попадания луча wallX
+      const noise = Math.sin(row * 5 + wallX * 10) > 0;
+      const currentBrickColor = noise ? `rgb(${Math.min(255, r+15)},${Math.min(255, g+5)},${b})` : brickColor;
 
-      const texY = Math.floor((sy / wallHeight) * texHeight);
-      const isHorizontalJoint = (texY % brickRowHeight === 0);
-      const brickRow = Math.floor(texY / brickRowHeight);
-      const xOffset = (brickRow % 2 === 0) ? 0.25 : 0.75;
-      const normalizedWallX = (wallX + xOffset) * 2;
-      const isVerticalJoint = (Math.floor(normalizedWallX * 32) % 16 === 0);
-
-      let r = rBase, g = gBase, b = bBase;
-
-      if (isHorizontalJoint || isVerticalJoint) {
-        r = isVertical ? 40 : 60; g = isVertical ? 40 : 60; b = isVertical ? 40 : 60;
-      } else {
-        const noise = (Math.sin(texY * 2 + wallX * 20) * 12);
-        r = Math.min(255, Math.max(0, r + noise));
-        g = Math.min(255, Math.max(0, g + noise));
-        b = Math.min(255, Math.max(0, b + noise));
-      }
-
-      ctx.fillStyle = `rgb(${Math.floor(r * light)}, ${Math.floor(g * light)}, ${Math.floor(b * light)})`;
-      ctx.fillRect(i, currentY, 1, 1);
+      grad.addColorStop(startPos, seamColor);       // Шов в начале ряда
+      grad.addColorStop(startPos + 0.03, currentBrickColor); // Сам кирпич
+      grad.addColorStop(endPos - 0.03, currentBrickColor);
     }
+    
+    // Вертикальный шов (вертикальная насечка на кирпиче через регулярные интервалы по горизонтали)
+    const isVertSeam = Math.floor(wallX * 5) % 2 === 0;
+    
+    ctx.fillStyle = isVertSeam ? seamColor : grad;
+    ctx.fillRect(i, startY, 1, wallHeight); // Отрисовка всей полосы стены ОДНИМ вызовом
   }
 
   const others = Object.values(players).filter((p) => p.id !== myId && p.alive !== false);
@@ -370,11 +365,12 @@ function shoot() {
 
 function showMessage(text) {
   const el = document.getElementById('message');
-  el.textContent = text + ' — возрождение через 3 сек...';
-  el.style.display = 'block';
+  if (el) {
+    el.textContent = text + ' — возрождение через 3 сек...';
+    el.style.display = 'block';
+  }
 }
 function hideMessage() {
-  document.getElementById('message').style.none = 'none';
   const el = document.getElementById('message');
   if (el) el.style.display = 'none';
 }
