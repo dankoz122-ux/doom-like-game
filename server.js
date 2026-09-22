@@ -9,7 +9,6 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 1 = стена, 0 = проход. Классическая "коридорная" карта в стиле Doom.
 const MAP = [
   [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
   [1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
@@ -30,11 +29,17 @@ const MAP = [
 ];
 
 const SPAWNS = [
-  { x: 2.5, y: 1.5 },
-  { x: 13.5, y: 1.5 },
-  { x: 2.5, y: 13.5 },
-  { x: 13.5, y: 13.5 },
-  { x: 7.5, y: 7.5 },
+  { x: 2.5, y: 1.5 }, { x: 13.5, y: 1.5 },
+  { x: 2.5, y: 13.5 }, { x: 13.5, y: 13.5 }, { x: 7.5, y: 7.5 },
+];
+
+// Точки размещения ящиков с патронами на карте
+const ammoBoxes = [
+  { id: 'b1', x: 5.5, y: 1.5, active: true },
+  { id: 'b2', x: 1.5, y: 5.5, active: true },
+  { id: 'b3', x: 14.5, y: 5.5, active: true },
+  { id: 'b4', x: 9.5, y: 9.5, active: true },
+  { id: 'b5', x: 5.5, y: 13.5, active: true }
 ];
 
 const players = {};
@@ -46,18 +51,13 @@ function randomSpawn() {
 io.on('connection', (socket) => {
   const spawn = randomSpawn();
   players[socket.id] = {
-    id: socket.id,
-    x: spawn.x,
-    y: spawn.y,
-    angle: 0,
-    health: 100,
-    kills: 0,
-    deaths: 0,
-    name: 'Player' + socket.id.slice(0, 4),
-    alive: true,
+    id: socket.id, x: spawn.x, y: spawn.y, angle: 0,
+    health: 100, kills: 0, deaths: 0,
+    name: 'Player' + socket.id.slice(0, 4), alive: true,
   };
 
-  socket.emit('init', { id: socket.id, map: MAP, players });
+  // Передаем при подключении карту, игроков и список ящиков
+  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes });
   socket.broadcast.emit('playerJoined', players[socket.id]);
   console.log('Игрок подключился:', socket.id);
 
@@ -71,14 +71,22 @@ io.on('connection', (socket) => {
   socket.on('move', (data) => {
     const p = players[socket.id];
     if (!p || !p.alive) return;
-    if (
-      typeof data.x === 'number' &&
-      typeof data.y === 'number' &&
-      typeof data.angle === 'number'
-    ) {
-      p.x = data.x;
-      p.y = data.y;
-      p.angle = data.angle;
+    if (typeof data.x === 'number' && typeof data.y === 'number' && typeof data.angle === 'number') {
+      p.x = data.x; p.y = data.y; p.angle = data.angle;
+
+      // Проверка сбора патронов сервером
+      for (const box of ammoBoxes) {
+        if (box.active && Math.hypot(p.x - box.x, p.y - box.y) < 0.5) {
+          box.active = false;
+          io.emit('ammoPicked', { boxId: box.id, playerId: socket.id });
+          
+          // Респаун ящика через 10 секунд
+          setTimeout(() => {
+            box.active = true;
+            io.emit('ammoRespawned', box);
+          }, 10000);
+        }
+      }
     }
   });
 
@@ -92,18 +100,13 @@ io.on('connection', (socket) => {
     io.emit('damage', { targetId: target.id, health: target.health, byId: socket.id });
 
     if (target.health <= 0) {
-      target.alive = false;
-      target.deaths++;
-      shooter.kills++;
+      target.alive = false; target.deaths++; shooter.kills++;
       io.emit('death', { targetId: target.id, byId: socket.id, killerName: shooter.name });
 
       setTimeout(() => {
-        if (!players[target.id]) return; // игрок мог отключиться
+        if (!players[target.id]) return;
         const sp = randomSpawn();
-        target.x = sp.x;
-        target.y = sp.y;
-        target.health = 100;
-        target.alive = true;
+        target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
         io.emit('respawn', { id: target.id, x: target.x, y: target.y });
       }, 3000);
     }
@@ -116,10 +119,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Рассылаем актуальное состояние всем клиентам 20 раз в секунду
-setInterval(() => {
-  io.emit('state', players);
-}, 50);
+setInterval(() => { io.emit('state', players); }, 50);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log('Сервер запущен на порту ' + PORT));
