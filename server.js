@@ -64,7 +64,7 @@ let match = { mode: 'tdm', phase: 'active', endsAt: Date.now() + 120000, round: 
 const SITE = { x: 7.5, y: 7.5 }; // существующая свободная клетка; карта не меняется
 const teamCounts = () => Object.values(players).reduce((a,p)=>(a[p.team]=(a[p.team]||0)+1,a),{red:0,blue:0});
 function assignTeam() { const c=teamCounts(); return (c.red||0) <= (c.blue||0) ? 'red' : 'blue'; }
-function publicMatch() { return { ...match, bomb: match.bomb ? { planted: true, x: match.bomb.x, y: match.bomb.y, explodesAt: match.bomb.explodesAt, defusingBy: match.bomb.defusingBy || null } : null, site: SITE }; }
+function publicMatch() { return { ...match, bomb: match.bomb ? { planted: true, x: match.bomb.x, y: match.bomb.y, explodesAt: match.bomb.explodesAt, defusingBy: match.bomb.defusingBy || null, defuseStartedAt: match.bomb.defuseStartedAt || null } : null, site: SITE }; }
 function emitMatch() { io.emit('matchState', publicMatch()); }
 function aliveTeamCount(team) { return Object.values(players).filter(p=>p.alive && p.team===team).length; }
 function finishRound(winner, reason) {
@@ -107,8 +107,10 @@ io.on('connection', (socket) => {
     const near=(x,y)=>Math.hypot(p.x-x,p.y-y)<1.35;
     if(action==='plant' && p.team==='red' && !match.bomb && near(SITE.x,SITE.y)) {
       match.bomb={x:SITE.x,y:SITE.y,explodesAt:Date.now()+35000,defusingBy:null}; match.message='Бомба заложена!'; emitMatch();
-    } else if(action==='defuse' && p.team==='blue' && match.bomb && near(match.bomb.x,match.bomb.y)) {
-      finishRound('blue','Бомба разминирована!');
+    } else if(action==='defuseStart' && p.team==='blue' && match.bomb && near(match.bomb.x,match.bomb.y)) {
+      match.bomb.defusingBy=socket.id; match.bomb.defuseStartedAt=Date.now(); match.message='Идёт разминирование'; emitMatch();
+    } else if(action==='defuseCancel' && match.bomb && match.bomb.defusingBy===socket.id) {
+      match.bomb.defusingBy=null; match.bomb.defuseStartedAt=null; match.message='Разминирование прервано'; emitMatch();
     }
   });
   socket.on('setName', (name) => {
@@ -217,7 +219,9 @@ io.on('connection', (socket) => {
 setInterval(() => {
   const now=Date.now();
   if(match.mode==='bomb' && match.phase==='active') {
-    if(match.bomb && now>=match.bomb.explodesAt) finishRound('red','Бомба взорвалась!');
+    if(match.bomb && match.bomb.defusingBy) { const dp=players[match.bomb.defusingBy]; if(!dp || !dp.alive || Math.hypot(dp.x-match.bomb.x,dp.y-match.bomb.y)>=1.35) { match.bomb.defusingBy=null; match.bomb.defuseStartedAt=null; match.message='Разминирование прервано'; emitMatch(); } }
+    if(match.bomb && match.bomb.defusingBy && now-(match.bomb.defuseStartedAt||now)>=7000) finishRound('blue','Бомба разминирована!');
+    else if(match.bomb && now>=match.bomb.explodesAt) finishRound('red','Бомба взорвалась!');
     else if(!match.bomb && now>=match.endsAt) finishRound('blue','Время атаки вышло');
   }
   if(match.phase==='intermission' && now>=match.roundEndsAt) {

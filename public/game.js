@@ -42,7 +42,7 @@ let matchInfo = {mode:'tdm',phase:'active',scores:{red:0,blue:0}};
 const keys = {};
 document.addEventListener('keydown', (e) => { 
   keys[e.code] = true; 
-  if(e.code==='KeyE' && me.alive){ const action=(matchInfo.mode==='bomb' && me.team==='blue')?'defuse':'plant'; socket.emit('bombAction',action); }
+  if(e.code==='KeyE' && me.alive && !e.repeat){ if(matchInfo.mode==='bomb' && me.team==='blue') socket.emit('bombAction','defuseStart'); else if(matchInfo.mode==='bomb' && me.team==='red') socket.emit('bombAction','plant'); }
   if (!me.alive) return;
 
   if (e.code === 'KeyR' && reloadTimer <= 0 && me.currentWeapon !== 'rpg') {
@@ -54,7 +54,7 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Digit4' && me.currentWeapon !== 'shotgun' && reloadTimer <= 0) { me.currentWeapon = 'shotgun'; shootCooldown = 0.15; }
   if (e.code === 'Digit5' && me.currentWeapon !== 'knife' && reloadTimer <= 0) { me.currentWeapon = 'knife'; shootCooldown = 0.15; }
 });
-document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+document.addEventListener('keyup', (e) => { keys[e.code] = false; if(e.code==='KeyE') socket.emit('bombAction','defuseCancel'); });
 
 canvas.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas) {
@@ -303,6 +303,7 @@ function render() {
   ammoBoxes.forEach(b => { if (b.active) sprites.push({ x: b.x, y: b.y, type: 'ammo', data: b }); });
   medkits.forEach(k => { if (k.active) sprites.push({ x: k.x, y: k.y, type: 'medkit', data: k }); });
   if (rpgWeapon.active) sprites.push({ x: rpgWeapon.x, y: rpgWeapon.y, type: 'rpgDrop', data: rpgWeapon });
+  if(matchInfo.mode==='bomb' && matchInfo.bomb) sprites.push({x:matchInfo.bomb.x,y:matchInfo.bomb.y,type:'bomb',data:matchInfo.bomb});
 
   particles.forEach(p => { sprites.push({ x: p.x, y: p.y, type: 'particle', data: p }); });
   damageTexts.forEach(t => { sprites.push({ x: t.x, y: t.y, type: 'damageText', data: t }); });
@@ -341,9 +342,11 @@ function drawSprite(sprite, depthBuffer) {
     ctx.fillStyle = '#f1c40f'; ctx.fillRect(cx - w * 0.1, cy - h * 0.2, w * 0.4, h * 0.15); 
     ctx.fillStyle = '#111111'; ctx.fillRect(cx - w * 0.2, cy - h * 0.3, w * 0.1, h * 0.1); 
 
-    ctx.fillStyle = '#fff'; ctx.font = '12px monospace'; ctx.textAlign = 'center'; ctx.fillText(sprite.data.name || '', screenX, cy - h / 2 - 25);
+    ctx.fillStyle = sprite.data.team === 'red' ? '#ff4b4b' : '#45a5ff'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center'; ctx.fillText(sprite.data.name || '', screenX, cy - h / 2 - 25);
     const hpWidth = size / 2; ctx.fillStyle = '#222'; ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth, 4);
     ctx.fillStyle = '#2ecc71'; ctx.fillRect(screenX - hpWidth / 2, cy - h / 2 - 15, hpWidth * Math.max(0, (sprite.data.health || 0) / 100), 4);
+  } else if (sprite.type === 'bomb') {
+    const bx=screenX, by=H/2+size*0.22, r=Math.max(7,size*0.12); ctx.fillStyle='#20252b'; ctx.fillRect(bx-r,by-r,r*2,r*2); ctx.strokeStyle='#ffcc00';ctx.lineWidth=3;ctx.strokeRect(bx-r,by-r,r*2,r*2);ctx.fillStyle='#ff3333';ctx.font=`bold ${Math.max(10,r)}px monospace`;ctx.textAlign='center';ctx.fillText('C4',bx,by+r*0.35);
   } else if (sprite.type === 'ammo') {
     const boxWidth = size * 0.4, boxHeight = size * 0.25; const bx = screenX - boxWidth / 2, by = H / 2 + size * 0.2;
     ctx.fillStyle = '#d35400'; ctx.fillRect(bx, by, boxWidth, boxHeight); ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = Math.max(1, size * 0.02); ctx.strokeRect(bx, by, boxWidth, boxHeight);
@@ -400,6 +403,8 @@ function drawMinimap() {
   const scale = 6, mx = 10, my = 10;
   ctx.save(); ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; ctx.fillRect(mx, my, MAP.length * scale, MAP.length * scale); ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
   for (let r = 0; r < MAP.length; r++) { for (let c = 0; c < MAP[r].length; c++) { if (MAP[r][c] === 1) ctx.fillRect(mx + c * scale, my + r * scale, scale - 1, scale - 1); } }
+  if(matchInfo.mode==='bomb' && matchInfo.site){ctx.fillStyle='#ffd400';ctx.fillRect(mx+matchInfo.site.x*scale-3,my+matchInfo.site.y*scale-3,6,6);ctx.fillStyle='#fff';ctx.font='bold 8px monospace';ctx.fillText('A',mx+matchInfo.site.x*scale+5,my+matchInfo.site.y*scale-4);}
+  if(matchInfo.mode==='bomb' && matchInfo.bomb){ctx.fillStyle='#ff3030';ctx.fillRect(mx+matchInfo.bomb.x*scale-3,my+matchInfo.bomb.y*scale-3,6,6);}
   ammoBoxes.forEach(b => { if (b.active) { ctx.fillStyle = '#e67e22'; ctx.fillRect(mx + b.x * scale - 1, my + b.y * scale - 1, 3, 3); } });
   medkits.forEach(k => { if (k.active) { ctx.fillStyle = '#2ecc71'; ctx.fillRect(mx + k.x * scale - 1, my + k.y * scale - 1, 3, 3); } });
   if (rpgWeapon.active) { ctx.fillStyle = '#3498db'; ctx.fillRect(mx + rpgWeapon.x * scale - 2, my + rpgWeapon.y * scale - 2, 4, 4); } 
@@ -410,9 +415,13 @@ function drawMinimap() {
 
 function drawHUD() {
   ctx.save(); ctx.textAlign='center'; ctx.font='bold 17px monospace'; ctx.fillStyle='#fff';
-  const modeLabel=matchInfo.mode==='bomb'?'БОМБА: КРАСНЫЕ АТАКУЮТ / СИНИЕ ЗАЩИЩАЮТ':'КОМАНДНЫЙ БОЙ';
-  ctx.fillText(modeLabel,W/2,24); ctx.font='14px monospace'; ctx.fillText(`КРАСНЫЕ ${matchInfo.scores?.red||0} : ${matchInfo.scores?.blue||0} СИНИЕ`,W/2,44);
-  if(matchInfo.mode==='bomb'){ctx.fillStyle='#f1c40f';ctx.fillText(matchInfo.bomb?'БОМБА ЗАЛОЖЕНА — E: РАЗМИНИРОВАТЬ':'КРАСНЫМ: E У ТОЧКИ — ЗАЛОЖИТЬ БОМБУ',W/2,64);}
+  const modeLabel=matchInfo.mode==='bomb'?'РЕЖИМ: БОМБА — КРАСНЫЕ АТАКУЮТ / СИНИЕ ЗАЩИЩАЮТ':'РЕЖИМ: КОМАНДНЫЙ БОЙ';
+  ctx.fillText(modeLabel,W/2,22); ctx.font='bold 16px monospace';
+  const deadline=matchInfo.bomb?.explodesAt || matchInfo.endsAt || matchInfo.roundEndsAt || 0; const remain=Math.max(0,Math.ceil((deadline-Date.now())/1000));
+  ctx.fillStyle=remain<=10?'#ff4b4b':'#fff'; ctx.fillText(`ОСТАЛОСЬ ${Math.floor(remain/60)}:${String(remain%60).padStart(2,'0')}  |  РАУНД ${matchInfo.round||1}`,W/2,43);
+  ctx.font='14px monospace';ctx.fillText(`КРАСНЫЕ ${matchInfo.scores?.red||0} : ${matchInfo.scores?.blue||0} СИНИЕ`,W/2,62);
+  if(matchInfo.mode==='bomb'){ctx.fillStyle='#ffd400';ctx.fillText(matchInfo.bomb?'БОМБА УСТАНОВЛЕНА — СИНИМ УДЕРЖИВАТЬ E 7 СЕК':'ПЛЕНТ A: КРАСНЫМ НАЖАТЬ E РЯДОМ',W/2,82);
+    if(matchInfo.bomb?.defusingBy && matchInfo.bomb.defuseStartedAt){const prog=Math.min(1,(Date.now()-matchInfo.bomb.defuseStartedAt)/7000);ctx.fillStyle='#222';ctx.fillRect(W/2-100,91,200,9);ctx.fillStyle='#2ecc71';ctx.fillRect(W/2-100,91,200*prog,9);ctx.fillStyle='#fff';ctx.font='11px monospace';ctx.fillText(`РАЗМИНИРОВАНИЕ ${Math.max(0,(7-(Date.now()-matchInfo.bomb.defuseStartedAt)/1000)).toFixed(1)}с`,W/2,113);}}
   ctx.restore();
   ctx.textAlign = 'left'; ctx.font = '18px monospace'; ctx.fillStyle = '#fff';
   const wConf = WEAPONS[me.currentWeapon]; ctx.fillText(`ОРУЖИЕ: ${wConf.name}`, 10, H - 45);
