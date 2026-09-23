@@ -17,16 +17,19 @@ let rpgWeapon = { active: false, x: 0, y: 0 };
 const WEAPONS = {
   pistol: { name: 'ПИСТОЛЕТ', maxAmmo: 8, cd: 0.3, dmg: 25, reloadTime: 1.0 },
   rifle: { name: 'АВТОМАТ', maxAmmo: 30, cd: 0.1, dmg: 10, reloadTime: 1.8 },
-  rpg: { name: 'РПГ-7 (ОДНОРАЗОВЫЙ)', maxAmmo: 1, cd: 1.0, dmg: 100, reloadTime: 999 }
+  rpg: { name: 'РПГ-7 (ОДНОРАЗОВЫЙ)', maxAmmo: 1, cd: 1.0, dmg: 100, reloadTime: 999 },
+  shotgun: { name: 'ДРОБОВИК', maxAmmo: 6, cd: 0.75, dmg: 55, reloadTime: 1.5 },
+  knife: { name: 'НОЖ', maxAmmo: Infinity, cd: 0.55, dmg: 45, reloadTime: 0 }
 };
 
 const me = { 
   x: 2.5, y: 2.5, angle: 0, health: 100, alive: true, kills: 0, deaths: 0, name: '',
-  currentWeapon: 'pistol', ammo: { pistol: 8, rifle: 30, rpg: 0 }, reserveAmmo: 60, hasRpg: false 
+  currentWeapon: 'pistol', ammo: { pistol: 8, rifle: 30, rpg: 0, shotgun: 6, knife: Infinity }, reserveAmmo: 60, hasRpg: false 
 };
 
 let weaponRecoil = 0, muzzleFlashTimer = 0, hitMarkerTimer = 0, shootCooldown = 0, reloadTimer = 0;        
 let isMouseDown = false;
+let deathEffectTimer = 0, deathEffectMax = 1.8, knifeSwing = 0;
 
 let particles = [];       
 let damageTexts = [];     
@@ -44,6 +47,8 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Digit1' && me.currentWeapon !== 'pistol' && reloadTimer <= 0) { me.currentWeapon = 'pistol'; shootCooldown = 0.15; }
   if (e.code === 'Digit2' && me.currentWeapon !== 'rifle' && reloadTimer <= 0) { me.currentWeapon = 'rifle'; shootCooldown = 0.15; }
   if (e.code === 'Digit3' && me.hasRpg && me.currentWeapon !== 'rpg' && reloadTimer <= 0) { me.currentWeapon = 'rpg'; shootCooldown = 0.2; }
+  if (e.code === 'Digit4' && me.currentWeapon !== 'shotgun' && reloadTimer <= 0) { me.currentWeapon = 'shotgun'; shootCooldown = 0.15; }
+  if (e.code === 'Digit5' && me.currentWeapon !== 'knife' && reloadTimer <= 0) { me.currentWeapon = 'knife'; shootCooldown = 0.15; }
 });
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -142,7 +147,8 @@ socket.on('rpg_explosion_fx', (data) => {
 
 socket.on('death', (data) => {
   if (data.targetId === myId) {
-    me.alive = false; isMouseDown = false;
+    me.alive = false; isMouseDown = false; deathEffectTimer = deathEffectMax;
+    createDeathParticles(me.x, me.y);
     
     // Достаем точное название пушки из нашего независимого локального кэша попаданий
     killerWeaponName = playersLastWeapons[data.byId] || 'НЕИЗВЕСТНОГО ОРУЖИЯ';
@@ -154,10 +160,15 @@ socket.on('death', (data) => {
   }
 });
 
+socket.on('death', (data) => {
+  const victim = players[data.targetId];
+  if (victim && data.targetId !== myId) createDeathParticles(victim.x, victim.y);
+});
+
 socket.on('respawn', (data) => {
   if (data.id === myId) {
     me.x = data.x; me.y = data.y; me.health = 100; me.alive = true;
-    me.ammo.pistol = WEAPONS.pistol.maxAmmo; me.ammo.rifle = WEAPONS.rifle.maxAmmo; me.ammo.rpg = 0;
+    me.ammo.pistol = WEAPONS.pistol.maxAmmo; me.ammo.rifle = WEAPONS.rifle.maxAmmo; me.ammo.rpg = 0; me.ammo.shotgun = WEAPONS.shotgun.maxAmmo; me.ammo.knife = Infinity;
     me.reserveAmmo = 60; me.hasRpg = false; me.currentWeapon = 'pistol'; reloadTimer = 0; shootCooldown = 0; 
     hideMessage();
   }
@@ -172,6 +183,14 @@ function createWallSparks(x, y) {
       color: Math.random() > 0.5 ? '#7f8c8d' : '#d2dae2', 
       size: 2 + Math.random() * 2
     });
+  }
+}
+
+function createDeathParticles(x, y) {
+  // Небольшой стилизованный всплеск при смерти, без изменения состояния сервера.
+  for (let i = 0; i < 22; i++) {
+    const a = Math.random() * Math.PI * 2, speed = 0.25 + Math.random() * 1.4;
+    particles.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, timer: 0.35 + Math.random() * 0.65, color: ['#c0392b','#7f1d1d','#9b59b6'][i % 3], size: 2 + Math.random() * 4 });
   }
 }
 
@@ -194,7 +213,9 @@ function initiateReload() {
 }
 
 function update(dt) {
-  if (!me.alive || !MAP.length) return;
+  if (deathEffectTimer > 0) deathEffectTimer = Math.max(0, deathEffectTimer - dt);
+  if (knifeSwing > 0) knifeSwing = Math.max(0, knifeSwing - dt * 5);
+  if (!me.alive || !MAP.length) { particles.forEach(p => { p.x += p.vx * dt * 4; p.y += p.vy * dt * 4; p.timer -= dt; }); particles = particles.filter(p => p.timer > 0); return; }
   const moveSpeed = 3 * dt, rotSpeed = 2.2 * dt;
 
   if (weaponRecoil > 0) weaponRecoil -= dt * 8; if (weaponRecoil < 0) weaponRecoil = 0;
@@ -293,7 +314,7 @@ function render() {
   sprites.forEach(s => drawSprite(s, depthBuffer));
 
   if (me.alive) { drawWeapon(); drawMuzzleFlash(); }
-  drawHUD(); drawMinimap(); 
+  drawHUD(); drawMinimap(); drawDeathEffect(); 
 }
 function drawSprite(sprite, depthBuffer) {
   const dx = sprite.x - me.x, dy = sprite.y - me.y; const dist = Math.hypot(dx, dy);
@@ -341,6 +362,14 @@ function drawWeapon() {
     ctx.fillStyle = '#111111'; ctx.fillRect(ox - 10, oy - 60, 20, 60); ctx.fillStyle = '#7f8c8d'; ctx.fillRect(ox - 8, oy - 110, 16, 60); ctx.fillStyle = '#e74c3c'; ctx.fillRect(ox - 2, oy - 115, 4, 4);
   } else if (me.currentWeapon === 'rifle') {
     ctx.fillStyle = '#111111'; ctx.fillRect(ox - 12, oy - 70, 24, 70); ctx.fillStyle = '#2c3e50'; ctx.fillRect(ox - 8, oy - 145, 16, 85); ctx.fillStyle = '#111111'; ctx.beginPath(); ctx.moveTo(ox - 10, oy - 30); ctx.quadraticCurveTo(ox - 25, oy - 10, ox - 25, oy + 20); ctx.lineTo(ox - 12, oy + 20); ctx.fill();
+  } else if (me.currentWeapon === 'shotgun') {
+    ctx.fillStyle = '#3d3025'; ctx.fillRect(ox - 28, oy - 72, 56, 72);
+    ctx.fillStyle = '#6b4f32'; ctx.fillRect(ox - 19, oy - 125, 38, 70);
+    ctx.fillStyle = '#171717'; ctx.fillRect(ox - 22, oy - 157, 14, 55); ctx.fillRect(ox + 8, oy - 157, 14, 55);
+    ctx.fillStyle = '#999'; ctx.fillRect(ox - 21, oy - 160, 12, 8); ctx.fillRect(ox + 9, oy - 160, 12, 8);
+  } else if (me.currentWeapon === 'knife') {
+    const swing = knifeSwing * 28; ctx.save(); ctx.translate(ox + 35, oy - 28 + swing); ctx.rotate(-0.55 - knifeSwing * 0.8);
+    ctx.fillStyle = '#5d4037'; ctx.fillRect(-7, 0, 14, 58); ctx.fillStyle = '#bdc3c7'; ctx.beginPath(); ctx.moveTo(-9, 0); ctx.lineTo(0, -100); ctx.lineTo(9, 0); ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#ecf0f1'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
   } else if (me.currentWeapon === 'rpg') {
     ctx.fillStyle = '#1e3799'; ctx.fillRect(ox - 16, oy - 120, 32, 120); ctx.fillStyle = '#2c3e50'; ctx.fillRect(ox - 5, oy - 160, 10, 40);   
     if (me.ammo.rpg > 0) { ctx.fillStyle = '#f1c40f'; ctx.beginPath(); ctx.moveTo(ox - 15, oy - 160); ctx.lineTo(ox + 15, oy - 160); ctx.lineTo(ox + 25, oy - 185); ctx.lineTo(ox, oy - 210); ctx.lineTo(ox - 25, oy - 185); ctx.fill(); }
@@ -350,7 +379,8 @@ function drawWeapon() {
 
 function drawMuzzleFlash() {
   if (muzzleFlashTimer <= 0) return;
-  const isRpg = me.currentWeapon === 'rpg', rad = isRpg ? 60 : (me.currentWeapon === 'pistol' ? 20 : 30);
+  if (me.currentWeapon === 'knife') return;
+  const isRpg = me.currentWeapon === 'rpg', rad = isRpg ? 60 : (me.currentWeapon === 'pistol' ? 20 : (me.currentWeapon === 'shotgun' ? 48 : 30));
   const ox = W / 2, oy = H - (isRpg ? 160 : (me.currentWeapon === 'pistol' ? 115 : 145)) + (weaponRecoil * 35);
   ctx.save(); ctx.fillStyle = isRpg ? 'rgba(231, 76, 60, 0.9)' : 'rgba(241, 196, 15, 0.8)'; ctx.beginPath(); ctx.arc(ox, oy, rad, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(ox, oy, rad / 2.5, 0, Math.PI * 2); ctx.fill(); ctx.restore();
@@ -371,7 +401,8 @@ function drawMinimap() {
 function drawHUD() {
   ctx.textAlign = 'left'; ctx.font = '18px monospace'; ctx.fillStyle = '#fff';
   const wConf = WEAPONS[me.currentWeapon]; ctx.fillText(`ОРУЖИЕ: ${wConf.name}`, 10, H - 45);
-  if (me.currentWeapon === 'rpg') ctx.fillText(`AMMO: ${me.ammo.rpg} / 1 [ОДНОРАЗОВОЙ]`, 10, H - 20); else ctx.fillText(`AMMO: ${me.ammo[me.currentWeapon]} / ${wConf.maxAmmo} [РЕЗЕРВ: ${me.reserveAmmo}]`, 10, H - 20);
+  if (me.currentWeapon === 'knife') ctx.fillText('AMMO: ∞ [БЛИЖНИЙ БОЙ]', 10, H - 20);
+  else if (me.currentWeapon === 'rpg') ctx.fillText(`AMMO: ${me.ammo.rpg} / 1 [ОДНОРАЗОВОЙ]`, 10, H - 20); else ctx.fillText(`AMMO: ${me.ammo[me.currentWeapon]} / ${wConf.maxAmmo} [РЕЗЕРВ: ${me.reserveAmmo}]`, 10, H - 20);
   ctx.fillText('HP: ' + Math.max(0, Math.floor(me.health)), 450, H - 20); ctx.fillText(`K: ${me.kills}  D: ${me.deaths}`, W - 120, H - 20);
   ctx.save(); ctx.strokeStyle = hitMarkerTimer > 0 ? '#e74c3c' : '#fff'; ctx.lineWidth = hitMarkerTimer > 0 ? 3 : 2;
   ctx.beginPath(); ctx.moveTo(W / 2 - 8, H / 2); ctx.lineTo(W / 2 + 8, H / 2); ctx.moveTo(W / 2, H / 2 - 8); ctx.lineTo(W / 2, H / 2 + 8); ctx.stroke();
@@ -402,21 +433,39 @@ function shoot() {
     setTimeout(() => { if (me.alive && me.currentWeapon === 'rpg') me.currentWeapon = 'pistol'; }, 500); return;
   }
   
-  const currentAmmo = me.ammo[me.currentWeapon]; if (currentAmmo <= 0) { if (me.currentWeapon !== 'rpg') initiateReload(); return; }
-  me.ammo[me.currentWeapon]--; shootCooldown = wConf.cd;
-  weaponRecoil = 1.0; muzzleFlashTimer = me.currentWeapon === 'pistol' ? 0.06 : 0.04; 
+  const isKnife = me.currentWeapon === 'knife';
+  const currentAmmo = me.ammo[me.currentWeapon]; if (!isKnife && currentAmmo <= 0) { initiateReload(); return; }
+  if (!isKnife) me.ammo[me.currentWeapon]--;
+  shootCooldown = wConf.cd; weaponRecoil = isKnife ? 0.35 : 1.0; knifeSwing = isKnife ? 1 : 0;
+  muzzleFlashTimer = (me.currentWeapon === 'pistol' || me.currentWeapon === 'shotgun') ? 0.08 : 0.04; 
   const { dist: wallDist, endX, endY } = castRay(me.angle); if (wallDist < MAX_DEPTH) { createWallSparks(endX, endY); }
   
   let best = null, bestDist = Infinity;
   for (const id in players) {
     if (id === myId || !players[id].alive) continue;
     const p = players[id]; const dx = p.x - me.x, dy = p.y - me.y; const d = Math.hypot(dx, dy); const angleToPlayer = normalizeAngle(Math.atan2(dy, dx) - me.angle);
-    if (Math.abs(angleToPlayer) < 0.06 && d < wallDist && d < bestDist) { best = id; bestDist = d; }
+    const cone = isKnife ? 0.38 : (me.currentWeapon === 'shotgun' ? 0.19 : 0.06);
+    const range = isKnife ? 1.65 : wallDist;
+    if (Math.abs(angleToPlayer) < cone && d < range && d < bestDist) { best = id; bestDist = d; }
   }
   
   // Явно шлём weaponName для пистолета и автомата
-  if (best) socket.emit('shoot', { targetId: best, damage: wConf.dmg, weaponName: wConf.name });
-  if (me.ammo[me.currentWeapon] === 0 && me.reserveAmmo > 0) { setTimeout(() => { if (me.alive && me.ammo[me.currentWeapon] === 0) initiateReload(); }, wConf.cd * 1000); }
+  if (best) {
+    const damage = me.currentWeapon === 'shotgun' ? Math.max(12, Math.round(wConf.dmg * (1 - bestDist / 13))) : wConf.dmg;
+    socket.emit('shoot', { targetId: best, damage, weaponName: wConf.name });
+  }
+  if (!isKnife && me.ammo[me.currentWeapon] === 0 && me.reserveAmmo > 0) { setTimeout(() => { if (me.alive && me.ammo[me.currentWeapon] === 0) initiateReload(); }, wConf.cd * 1000); }
+}
+
+function drawDeathEffect() {
+  if (deathEffectTimer <= 0) return;
+  const alpha = Math.min(0.78, (deathEffectTimer / deathEffectMax) * 0.72 + 0.08);
+  ctx.save(); ctx.fillStyle = `rgba(95, 0, 8, ${alpha})`; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(W/2, H/2, 20, W/2, H/2, Math.max(W,H)*0.72);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${Math.min(0.85, alpha + 0.15)})`);
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = `rgba(0,0,0,${Math.min(0.75, alpha)})`; ctx.fillRect(0,0,W,H);
+  ctx.restore();
 }
 
 function showMessage(text) { const el = document.getElementById('message'); if (el) { el.textContent = text + ' — возрождение через 3 сек...'; el.style.display = 'block'; } }
