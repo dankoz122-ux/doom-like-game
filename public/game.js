@@ -30,6 +30,8 @@ const me = {
 let weaponRecoil = 0, muzzleFlashTimer = 0, hitMarkerTimer = 0, shootCooldown = 0, reloadTimer = 0;        
 let isMouseDown = false;
 let deathEffectTimer = 0, deathEffectMax = 1.8, knifeSwing = 0;
+let hurtFlashTimer = 0, hurtFlashMax = 0.45;
+let deathCorpses = [];
 
 let particles = [];       
 let damageTexts = [];     
@@ -116,11 +118,14 @@ socket.on('damage', (data) => {
   let oldHealth = (data.targetId === myId) ? me.health : (players[data.targetId] ? players[data.targetId].health : 100);
   let damageInfo = Math.max(0, oldHealth - data.health);
   
-  if (data.targetId === myId) me.health = data.health;
+  if (data.targetId === myId) {
+    me.health = data.health;
+    if (damageInfo > 0) hurtFlashTimer = hurtFlashMax;
+  }
   const target = players[data.targetId];
   
   if (target) {
-    if (data.byId === myId) hitMarkerTimer = 0.15; 
+    if (data.byId === myId && me.currentWeapon !== 'knife') hitMarkerTimer = 0.15; 
     
     // Перестраховка: если урон равен 25 — это ПИСТОЛЕТ, если меньше 15 — АВТОМАТ
     let weaponGuessed = 'АВТОМАТ';
@@ -147,6 +152,7 @@ socket.on('rpg_explosion_fx', (data) => {
 
 socket.on('death', (data) => {
   if (data.targetId === myId) {
+    deathCorpses.push({ x: me.x, y: me.y, timer: 2.2, maxTimer: 2.2, angle: me.angle, name: me.name });
     me.alive = false; isMouseDown = false; deathEffectTimer = deathEffectMax;
     createDeathParticles(me.x, me.y);
     
@@ -162,7 +168,10 @@ socket.on('death', (data) => {
 
 socket.on('death', (data) => {
   const victim = players[data.targetId];
-  if (victim && data.targetId !== myId) createDeathParticles(victim.x, victim.y);
+  if (victim && data.targetId !== myId) {
+    deathCorpses.push({ x: victim.x, y: victim.y, timer: 2.2, maxTimer: 2.2, angle: victim.angle || 0, name: victim.name || '' });
+    createDeathParticles(victim.x, victim.y);
+  }
 });
 
 socket.on('respawn', (data) => {
@@ -214,6 +223,8 @@ function initiateReload() {
 
 function update(dt) {
   if (deathEffectTimer > 0) deathEffectTimer = Math.max(0, deathEffectTimer - dt);
+  if (hurtFlashTimer > 0) hurtFlashTimer = Math.max(0, hurtFlashTimer - dt);
+  deathCorpses.forEach(c => c.timer -= dt); deathCorpses = deathCorpses.filter(c => c.timer > 0);
   if (knifeSwing > 0) knifeSwing = Math.max(0, knifeSwing - dt * 5);
   if (!me.alive || !MAP.length) { particles.forEach(p => { p.x += p.vx * dt * 4; p.y += p.vy * dt * 4; p.timer -= dt; }); particles = particles.filter(p => p.timer > 0); return; }
   const moveSpeed = 3 * dt, rotSpeed = 2.2 * dt;
@@ -303,6 +314,7 @@ function render() {
 
   const sprites = [];
   Object.values(players).forEach(p => { if (p.id !== myId && p.alive) sprites.push({ x: p.x, y: p.y, type: 'player', data: p }); });
+  deathCorpses.forEach(c => sprites.push({ x: c.x, y: c.y, type: 'corpse', data: c }));
   ammoBoxes.forEach(b => { if (b.active) sprites.push({ x: b.x, y: b.y, type: 'ammo', data: b }); });
   medkits.forEach(k => { if (k.active) sprites.push({ x: k.x, y: k.y, type: 'medkit', data: k }); });
   if (rpgWeapon.active) sprites.push({ x: rpgWeapon.x, y: rpgWeapon.y, type: 'rpgDrop', data: rpgWeapon });
@@ -314,7 +326,7 @@ function render() {
   sprites.forEach(s => drawSprite(s, depthBuffer));
 
   if (me.alive) { drawWeapon(); drawMuzzleFlash(); }
-  drawHUD(); drawMinimap(); drawDeathEffect(); 
+  drawHUD(); drawMinimap(); drawDeathEffect(); drawHurtEffect(); 
 }
 function drawSprite(sprite, depthBuffer) {
   const dx = sprite.x - me.x, dy = sprite.y - me.y; const dist = Math.hypot(dx, dy);
@@ -324,7 +336,14 @@ function drawSprite(sprite, depthBuffer) {
   const col = Math.floor(screenX); if (col >= 0 && col < NUM_RAYS && depthBuffer[col] < dist) return;
 
   ctx.save();
-  if (sprite.type === 'player') {
+  if (sprite.type === 'corpse') {
+    const fade = Math.min(1, sprite.data.timer / 0.45);
+    ctx.globalAlpha = fade;
+    ctx.translate(screenX, H / 2 + size * 0.22); ctx.rotate(-0.18);
+    ctx.fillStyle = '#555'; ctx.fillRect(-size * 0.27, -size * 0.04, size * 0.54, size * 0.16);
+    ctx.fillStyle = '#8e2929'; ctx.fillRect(-size * 0.34, -size * 0.02, size * 0.68, size * 0.08);
+    ctx.fillStyle = '#aaa'; ctx.beginPath(); ctx.arc(size * 0.32, size * 0.02, size * 0.09, 0, Math.PI * 2); ctx.fill();
+  } else if (sprite.type === 'player') {
     const cx = screenX, cy = H / 2 + size * 0.1; const w = size * 0.4, h = size * 0.5;
     ctx.fillStyle = '#ffffff'; ctx.fillRect(cx - w / 2, cy - h / 2, w, h); 
     ctx.fillStyle = '#e74c3c'; ctx.fillRect(cx - w / 4, cy - h / 2 - h * 0.2, w / 2, h * 0.2); 
@@ -444,8 +463,8 @@ function shoot() {
   for (const id in players) {
     if (id === myId || !players[id].alive) continue;
     const p = players[id]; const dx = p.x - me.x, dy = p.y - me.y; const d = Math.hypot(dx, dy); const angleToPlayer = normalizeAngle(Math.atan2(dy, dx) - me.angle);
-    const cone = isKnife ? 0.38 : (me.currentWeapon === 'shotgun' ? 0.19 : 0.06);
-    const range = isKnife ? 1.65 : wallDist;
+    const cone = isKnife ? 0.13 : (me.currentWeapon === 'shotgun' ? 0.19 : 0.06);
+    const range = isKnife ? Math.min(0.82, wallDist) : wallDist;
     if (Math.abs(angleToPlayer) < cone && d < range && d < bestDist) { best = id; bestDist = d; }
   }
   
@@ -465,6 +484,14 @@ function drawDeathEffect() {
   g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${Math.min(0.85, alpha + 0.15)})`);
   ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
   ctx.fillStyle = `rgba(0,0,0,${Math.min(0.75, alpha)})`; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+}
+
+function drawHurtEffect() {
+  if (hurtFlashTimer <= 0) return;
+  const a = 0.38 * (hurtFlashTimer / hurtFlashMax);
+  ctx.save(); ctx.fillStyle = `rgba(255, 25, 25, ${a * 0.22})`; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = `rgba(255, 35, 35, ${a})`; ctx.lineWidth = 16; ctx.strokeRect(0, 0, W, H);
   ctx.restore();
 }
 
