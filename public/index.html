@@ -7,10 +7,21 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="container">
+<div id="lobby">
+  <div id="lobbyBox">
+    <h1>DOOM-подобная игра</h1>
+    <p class="lobbyHint">Выбери команду и имя перед входом в бой</p>
+    <input id="nameInput" type="text" maxlength="16" placeholder="Имя игрока" autocomplete="off">
+    <div class="teamButtons">
+      <button id="joinRed" class="team-btn red">Играть за КРАСНЫХ</button>
+      <button id="joinBlue" class="team-btn blue">Играть за СИНИХ</button>
+    </div>
+  </div>
+</div>
+<div id="container" style="display:none;">
   <canvas id="game" width="800" height="500"></canvas>
   <div id="message"></div>
-  <div id="hint">WASD — движение &nbsp;|&nbsp; мышь — поворот (клик по экрану — захват курсора) &nbsp;|&nbsp; клик — выстрел</div>
+  <div id="hint">WASD — движение &nbsp;|&nbsp; мышь — поворот (клик по экрану — захват курсора) &nbsp;|&nbsp; клик — выстрел &nbsp;|&nbsp; E — заложить/разминировать бомбу</div>
 </div>
 <script src="/socket.io/socket.io.js"></script>
 <script src="game.js"></script>

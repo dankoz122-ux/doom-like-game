@@ -74,14 +74,28 @@ function isWall(x, y) {
   return cell === 1 || cell === '1';
 }
 
+// ---------- ЛОББИ: ВЫБОР ИМЕНИ И КОМАНДЫ ----------
+const lobbyEl = document.getElementById('lobby');
+const containerEl = document.getElementById('container');
+const nameInput = document.getElementById('nameInput');
+
+function joinGame(team) {
+  const chosenName = (nameInput.value || '').trim() || 'Игрок';
+  me.name = chosenName;
+  socket.emit('join', { name: chosenName, team });
+  lobbyEl.style.display = 'none';
+  containerEl.style.display = '';
+}
+document.getElementById('joinRed').addEventListener('click', () => joinGame('red'));
+document.getElementById('joinBlue').addEventListener('click', () => joinGame('blue'));
+nameInput.addEventListener('keydown', (e) => { if (e.code === 'Enter') e.preventDefault(); });
+
 // ---------- СЕТЬ ----------
 socket.on('init', (data) => {
   myId = data.id; MAP = data.map; players = data.players; ammoBoxes = data.ammoBoxes || []; medkits = data.medkits || [];
   rpgWeapon = data.rpgWeapon || { active: false, x: 0, y: 0 };
   if(data.match) matchInfo=data.match;
-  const p = players[myId]; if (p) { me.x = p.x; me.y = p.y; me.angle = p.angle; me.health = p.health; }
-  const name = prompt('Введите имя игрока:', 'Игрок') || 'Игрок';
-  me.name = name; socket.emit('setName', name);
+  const p = players[myId]; if (p) { me.x = p.x; me.y = p.y; me.angle = p.angle; me.health = p.health; me.team = p.team; }
 });
 
 socket.on('state', (serverPlayers) => {
@@ -147,7 +161,8 @@ socket.on('death', (data) => {
     createDeathParticles(me.x, me.y);
     
     // Сервер не передаёт надёжное название оружия убийцы — не угадываем его.
-    showMessage(`Вас убил ${data.killerName || 'неизвестный игрок'}`);
+    const respawnHint = matchInfo.mode === 'tdm' ? ' — возрождение через 3 сек...' : ' — ждите конца раунда...';
+    showMessage(`Вас убил ${data.killerName || 'неизвестный игрок'}${respawnHint}`);
   }
 });
 
@@ -503,7 +518,7 @@ function drawHurtEffect() {
   ctx.restore();
 }
 
-function showMessage(text) { const el = document.getElementById('message'); if (el) { el.textContent = text + ' — возрождение через 3 сек...'; el.style.display = 'block'; } }
+function showMessage(text) { const el = document.getElementById('message'); if (el) { el.textContent = text; el.style.display = 'block'; } }
 function hideMessage() { const el = document.getElementById('message'); if (el) el.style.display = 'none'; }
 function normalizeAngle(a) { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; }
 

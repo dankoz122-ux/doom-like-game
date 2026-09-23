@@ -36,9 +36,14 @@ const MAP = IMMUNE_MAP_DATA.trim().split('\n').map(row => {
   return cleanRow.split(',').map(char => parseInt(char.trim()));
 }).filter(row => row !== null);
 
-const SPAWNS = [
-  { x: 2.5, y: 1.5 }, { x: 13.5, y: 1.5 },
-  { x: 2.5, y: 13.5 }, { x: 13.5, y: 13.5 }, { x: 7.5, y: 7.5 }
+// Раздельные кластеры точек спавна: у каждой команды свои точки рядом друг с другом,
+// в разных углах карты (красные — сверху слева, синие — снизу справа).
+const RED_SPAWNS = [
+  { x: 1.5, y: 1.5 }, { x: 3.5, y: 1.5 }, { x: 1.5, y: 3.5 }, { x: 3.5, y: 3.5 }
+];
+const BLUE_SPAWNS = [
+  { x: 12.5, y: 13.5 }, { x: 13.5, y: 13.5 }, { x: 14.5, y: 13.5 },
+  { x: 12.5, y: 12.5 }, { x: 14.5, y: 12.5 }
 ];
 
 const ammoBoxes = [
@@ -75,32 +80,41 @@ function finishRound(winner, reason) {
 }
 function startRound() {
   match.phase='active'; match.roundEndsAt=0; match.bomb=null; match.message='Раунд '+match.round;
-  for (const p of Object.values(players)) { p.alive=true; p.health=100; const sp=randomSpawn(); p.x=sp.x; p.y=sp.y; }
+  for (const p of Object.values(players)) { p.alive=true; p.health=100; const sp=randomSpawn(p.team); p.x=sp.x; p.y=sp.y; }
   io.emit('roundReset', players); emitMatch();
 }
 function startNextMode() {
   modeIndex=(modeIndex+1)%2; match.mode=modeIndex===0?'tdm':'bomb'; match.phase='active'; match.round=1;
   match.endsAt=Date.now()+(match.mode==='tdm'?120000:300000); match.roundEndsAt=0; match.bomb=null; match.scores={red:0,blue:0};
-  Object.values(players).forEach((p,i)=>{p.team=i%2===0?'red':'blue'; p.alive=true;p.health=100;const sp=randomSpawn();p.x=sp.x;p.y=sp.y;});
+  // Команда игрока — его собственный выбор при входе, при смене режима она не меняется.
+  Object.values(players).forEach((p)=>{p.alive=true;p.health=100;const sp=randomSpawn(p.team);p.x=sp.x;p.y=sp.y;});
   match.message=match.mode==='bomb'?'Закладка бомбы':'Командный бой'; io.emit('roundReset',players); emitMatch();
 }
 
 
-function randomSpawn() {
-  return SPAWNS[Math.floor(Math.random() * SPAWNS.length)];
+function randomSpawn(team) {
+  const arr = team === 'blue' ? BLUE_SPAWNS : RED_SPAWNS;
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 io.on('connection', (socket) => {
-  const spawn = randomSpawn();
-  players[socket.id] = {
-    id: socket.id, x: spawn.x, y: spawn.y, angle: 0,
-    health: 100, kills: 0, deaths: 0, team: assignTeam(),
-    name: 'Player' + socket.id.slice(0, 4), alive: true
-  };
+  // Игрок появляется в мире только после того, как выбрал команду и имя в лобби.
+  socket.on('join', (data) => {
+    if (players[socket.id]) return; // уже присоединился
+    const requestedTeam = (data && (data.team === 'red' || data.team === 'blue')) ? data.team : assignTeam();
+    const spawn = randomSpawn(requestedTeam);
+    const cleanName = String((data && data.name) || '').slice(0, 16).trim() || ('Player' + socket.id.slice(0, 4));
 
-  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits, rpgWeapon, match: publicMatch() });
-  socket.broadcast.emit('playerJoined', players[socket.id]);
-  console.log('Игрок подключился:', socket.id);
+    players[socket.id] = {
+      id: socket.id, x: spawn.x, y: spawn.y, angle: 0,
+      health: 100, kills: 0, deaths: 0, team: requestedTeam,
+      name: cleanName, alive: true
+    };
+
+    socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits, rpgWeapon, match: publicMatch() });
+    socket.broadcast.emit('playerJoined', players[socket.id]);
+    console.log('Игрок подключился:', socket.id, requestedTeam);
+  });
 
   socket.on('bombAction', (action) => {
     const p=players[socket.id]; if(!p||!p.alive||match.mode!=='bomb'||match.phase!=='active') return;
@@ -113,13 +127,6 @@ io.on('connection', (socket) => {
       match.bomb.defusingBy=null; match.bomb.defuseStartedAt=null; match.message='Разминирование прервано'; emitMatch();
     }
   });
-  socket.on('setName', (name) => {
-    if (players[socket.id]) {
-      const clean = String(name || '').slice(0, 16).trim();
-      if (clean) players[socket.id].name = clean;
-    }
-  });
-
   socket.on('move', (data) => {
     const p = players[socket.id];
     if (!p || !p.alive) return;
@@ -178,12 +185,16 @@ io.on('connection', (socket) => {
         if(match.mode==='bomb' && match.phase==='active') { if(aliveTeamCount('red')===0) finishRound('blue','Команда атакующих уничтожена'); else if(aliveTeamCount('blue')===0) finishRound('red','Команда защитников уничтожена'); }
         else if(match.mode==='tdm' && match.phase==='active' && aliveTeamCount(target.team)===0) { match.scores[shooter.team]=(match.scores[shooter.team]||0)+1; emitMatch(); }
 
-            setTimeout(() => {
-              if (!players[target.id]) return;
-              const sp = randomSpawn();
-              target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
-              io.emit('respawn', { id: target.id, x: target.x, y: target.y });
-            }, 3000);
+            // В режиме "Закладка" убитый остаётся мёртв до конца раунда — иначе элиминация
+            // не работает. Автовозрождение через 3 сек оставляем только в командном бою.
+            if (match.mode === 'tdm') {
+              setTimeout(() => {
+                if (!players[target.id]) return;
+                const sp = randomSpawn(target.team);
+                target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
+                io.emit('respawn', { id: target.id, x: target.x, y: target.y });
+              }, 3000);
+            }
           }
         }
       });
@@ -200,19 +211,24 @@ io.on('connection', (socket) => {
         if(match.mode==='bomb' && match.phase==='active') { if(aliveTeamCount('red')===0) finishRound('blue','Команда атакующих уничтожена'); else if(aliveTeamCount('blue')===0) finishRound('red','Команда защитников уничтожена'); }
         else if(match.mode==='tdm' && match.phase==='active' && aliveTeamCount(target.team)===0) { match.scores[shooter.team]=(match.scores[shooter.team]||0)+1; emitMatch(); }
 
-        setTimeout(() => {
-          if (!players[target.id]) return;
-          const sp = randomSpawn();
-          target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
-          io.emit('respawn', { id: target.id, x: target.x, y: target.y });
-        }, 3000);
+        // См. комментарий выше: в "Закладке" мёртвые не воскресают до конца раунда.
+        if (match.mode === 'tdm') {
+          setTimeout(() => {
+            if (!players[target.id]) return;
+            const sp = randomSpawn(target.team);
+            target.x = sp.x; target.y = sp.y; target.health = 100; target.alive = true;
+            io.emit('respawn', { id: target.id, x: target.x, y: target.y });
+          }, 3000);
+        }
       }
     }
   });
 
   socket.on('disconnect', () => {
-    delete players[socket.id];
-    io.emit('playerLeft', socket.id);
+    if (players[socket.id]) {
+      delete players[socket.id];
+      io.emit('playerLeft', socket.id);
+    }
   });
 });
 
