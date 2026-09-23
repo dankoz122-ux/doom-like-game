@@ -35,7 +35,7 @@ let deathCorpses = [];
 
 let particles = [];       
 let damageTexts = [];     
-let killerWeaponName = ''; 
+let lastAttackWeapon = null;
 
 // ---------- ВВОД УПРАВЛЕНИЯ ----------
 const keys = {};
@@ -71,9 +71,6 @@ function isWall(x, y) {
   const cell = MAP[my][mx];
   return cell === 1 || cell === '1';
 }
-
-// Хранилище последнего использованного оружия для каждого игрока на карте
-let playersLastWeapons = {};
 
 // ---------- СЕТЬ ----------
 socket.on('init', (data) => {
@@ -111,7 +108,7 @@ socket.on('rpgPicked', (data) => {
 });
 socket.on('rpgRespawned', (sRpg) => { rpgWeapon.active = true; });
 socket.on('playerJoined', (p) => { players[p.id] = p; });
-socket.on('playerLeft', (id) => { delete players[id]; delete playersLastWeapons[id]; });
+socket.on('playerLeft', (id) => { delete players[id]; });
 
 socket.on('damage', (data) => {
   // Вычисляем, сколько здоровья потеряла цель, чтобы определить оружие
@@ -125,29 +122,16 @@ socket.on('damage', (data) => {
   const target = players[data.targetId];
   
   if (target) {
-    if (data.byId === myId && me.currentWeapon !== 'knife') hitMarkerTimer = 0.15; 
-    
-    // Перестраховка: если урон равен 25 — это ПИСТОЛЕТ, если меньше 15 — АВТОМАТ
-    let weaponGuessed = 'АВТОМАТ';
-    if (damageInfo >= 20 && damageInfo <= 26) weaponGuessed = 'ПИСТОЛЕТ';
-    
-    // Запоминаем пушку стрелка локально на клиенте
-    playersLastWeapons[data.byId] = weaponGuessed;
+    // Маркер попадания показываем только для выстрелов из огнестрельного оружия.
+    if (data.byId === myId && lastAttackWeapon !== 'knife') hitMarkerTimer = 0.15;
     
     damageTexts.push({ x: target.x, y: target.y, text: `-${damageInfo || 10}`, timer: 0.6, color: '#e74c3c' });
   }
 });
 
-// Если взорвалась ракета РПГ, мы локально помечаем, что урон по площади нанёс взрыв
-socket.on('rpg_explosion_fx', (data) => { 
-  createExplosionParticles(data.x, data.y); 
-  // Фиксируем, что последнее попадание на карте могло быть от РПГ-7
-  Object.keys(players).forEach(id => {
-    const p = players[id];
-    if (p && Math.hypot(p.x - data.x, p.y - data.y) < 3.0) {
-      playersLastWeapons[id] = 'РПГ-7';
-    }
-  });
+// Визуальные частицы взрыва РПГ — без догадок об оружии убийцы.
+socket.on('rpg_explosion_fx', (data) => {
+  createExplosionParticles(data.x, data.y);
 });
 
 socket.on('death', (data) => {
@@ -156,13 +140,8 @@ socket.on('death', (data) => {
     me.alive = false; isMouseDown = false; deathEffectTimer = deathEffectMax;
     createDeathParticles(me.x, me.y);
     
-    // Достаем точное название пушки из нашего независимого локального кэша попаданий
-    killerWeaponName = playersLastWeapons[data.byId] || 'НЕИЗВЕСТНОГО ОРУЖИЯ';
-    
-    // Дополнительная проверка: если у нас хп улетело в глубокий минус, это точно был взрыв РПГ
-    if (me.health < -10) killerWeaponName = 'РПГ-7';
-    
-    showMessage(`Вас убил ${data.killerName} из ${killerWeaponName}`);
+    // Сервер не передаёт надёжное название оружия убийцы — не угадываем его.
+    showMessage(`Вас убил ${data.killerName || 'неизвестный игрок'}`);
   }
 });
 
@@ -337,12 +316,18 @@ function drawSprite(sprite, depthBuffer) {
 
   ctx.save();
   if (sprite.type === 'corpse') {
-    const fade = Math.min(1, sprite.data.timer / 0.45);
-    ctx.globalAlpha = fade;
-    ctx.translate(screenX, H / 2 + size * 0.22); ctx.rotate(-0.18);
-    ctx.fillStyle = '#555'; ctx.fillRect(-size * 0.27, -size * 0.04, size * 0.54, size * 0.16);
-    ctx.fillStyle = '#8e2929'; ctx.fillRect(-size * 0.34, -size * 0.02, size * 0.68, size * 0.08);
-    ctx.fillStyle = '#aaa'; ctx.beginPath(); ctx.arc(size * 0.32, size * 0.02, size * 0.09, 0, Math.PI * 2); ctx.fill();
+    // Стилизованное падение и постепенное исчезновение тела.
+    const progress = 1 - Math.max(0, Math.min(1, sprite.data.timer / sprite.data.maxTimer));
+    ctx.globalAlpha = Math.max(0, 1 - progress * 0.8);
+    ctx.translate(screenX, H / 2 + size * (0.08 + progress * 0.32));
+    ctx.rotate((sprite.data.angle || 0) * 0.08 + progress * 0.22);
+    const bodyW = size * 0.62, bodyH = size * 0.14;
+    ctx.fillStyle = '#3b3b3b';
+    ctx.fillRect(-bodyW * 0.48, -bodyH * 0.45, bodyW * 0.78, bodyH * 0.9);
+    ctx.fillStyle = '#7f1d1d';
+    ctx.fillRect(-bodyW * 0.24, -bodyH * 0.38, bodyW * 0.52, bodyH * 0.76);
+    ctx.fillStyle = '#a7a7a7';
+    ctx.beginPath(); ctx.arc(bodyW * 0.38, 0, bodyH * 0.48, 0, Math.PI * 2); ctx.fill();
   } else if (sprite.type === 'player') {
     const cx = screenX, cy = H / 2 + size * 0.1; const w = size * 0.4, h = size * 0.5;
     ctx.fillStyle = '#ffffff'; ctx.fillRect(cx - w / 2, cy - h / 2, w, h); 
@@ -456,8 +441,11 @@ function shoot() {
   const currentAmmo = me.ammo[me.currentWeapon]; if (!isKnife && currentAmmo <= 0) { initiateReload(); return; }
   if (!isKnife) me.ammo[me.currentWeapon]--;
   shootCooldown = wConf.cd; weaponRecoil = isKnife ? 0.35 : 1.0; knifeSwing = isKnife ? 1 : 0;
-  muzzleFlashTimer = (me.currentWeapon === 'pistol' || me.currentWeapon === 'shotgun') ? 0.08 : 0.04; 
-  const { dist: wallDist, endX, endY } = castRay(me.angle); if (wallDist < MAX_DEPTH) { createWallSparks(endX, endY); }
+  // Нож не создаёт вспышку выстрела и искры от стены.
+  muzzleFlashTimer = isKnife ? 0 : ((me.currentWeapon === 'pistol' || me.currentWeapon === 'shotgun') ? 0.08 : 0.04);
+  const { dist: wallDist, endX, endY } = castRay(me.angle);
+  if (!isKnife && wallDist < MAX_DEPTH) createWallSparks(endX, endY);
+  lastAttackWeapon = me.currentWeapon;
   
   let best = null, bestDist = Infinity;
   for (const id in players) {
