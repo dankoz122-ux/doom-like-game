@@ -36,11 +36,13 @@ let deathCorpses = [];
 let particles = [];       
 let damageTexts = [];     
 let lastAttackWeapon = null;
+let matchInfo = {mode:'tdm',phase:'active',scores:{red:0,blue:0}};
 
 // ---------- ВВОД УПРАВЛЕНИЯ ----------
 const keys = {};
 document.addEventListener('keydown', (e) => { 
   keys[e.code] = true; 
+  if(e.code==='KeyE' && me.alive){ const action=(matchInfo.mode==='bomb' && me.team==='blue')?'defuse':'plant'; socket.emit('bombAction',action); }
   if (!me.alive) return;
 
   if (e.code === 'KeyR' && reloadTimer <= 0 && me.currentWeapon !== 'rpg') {
@@ -76,6 +78,7 @@ function isWall(x, y) {
 socket.on('init', (data) => {
   myId = data.id; MAP = data.map; players = data.players; ammoBoxes = data.ammoBoxes || []; medkits = data.medkits || [];
   rpgWeapon = data.rpgWeapon || { active: false, x: 0, y: 0 };
+  if(data.match) matchInfo=data.match;
   const p = players[myId]; if (p) { me.x = p.x; me.y = p.y; me.angle = p.angle; me.health = p.health; }
   const name = prompt('Введите имя игрока:', 'Игрок') || 'Игрок';
   me.name = name; socket.emit('setName', name);
@@ -84,7 +87,7 @@ socket.on('init', (data) => {
 socket.on('state', (serverPlayers) => {
   for (const id in serverPlayers) {
     if (id === myId) {
-      me.health = serverPlayers[id].health; me.kills = serverPlayers[id].kills; me.deaths = serverPlayers[id].deaths; me.alive = serverPlayers[id].alive;
+      me.health = serverPlayers[id].health; me.kills = serverPlayers[id].kills; me.deaths = serverPlayers[id].deaths; me.alive = serverPlayers[id].alive; me.team=serverPlayers[id].team;
       players[id] = { ...serverPlayers[id], x: me.x, y: me.y, angle: me.angle };
     } else { players[id] = serverPlayers[id]; }
   }
@@ -107,6 +110,9 @@ socket.on('rpgPicked', (data) => {
   if (data.playerId === myId) { me.hasRpg = true; me.ammo.rpg = 1; me.currentWeapon = 'rpg'; }
 });
 socket.on('rpgRespawned', (sRpg) => { rpgWeapon.active = true; });
+socket.on('matchState', m => { matchInfo=m; });
+socket.on('roundReset', serverPlayers => { players=serverPlayers; const p=players[myId]; if(p){me.x=p.x;me.y=p.y;me.health=100;me.alive=true;} hideMessage(); });
+socket.on('roundResult', r => showMessage(`${r.reason || 'Раунд завершён'}\nСчёт: ${r.scores.red} : ${r.scores.blue}`));
 socket.on('playerJoined', (p) => { players[p.id] = p; });
 socket.on('playerLeft', (id) => { delete players[id]; });
 
@@ -403,6 +409,11 @@ function drawMinimap() {
 }
 
 function drawHUD() {
+  ctx.save(); ctx.textAlign='center'; ctx.font='bold 17px monospace'; ctx.fillStyle='#fff';
+  const modeLabel=matchInfo.mode==='bomb'?'БОМБА: КРАСНЫЕ АТАКУЮТ / СИНИЕ ЗАЩИЩАЮТ':'КОМАНДНЫЙ БОЙ';
+  ctx.fillText(modeLabel,W/2,24); ctx.font='14px monospace'; ctx.fillText(`КРАСНЫЕ ${matchInfo.scores?.red||0} : ${matchInfo.scores?.blue||0} СИНИЕ`,W/2,44);
+  if(matchInfo.mode==='bomb'){ctx.fillStyle='#f1c40f';ctx.fillText(matchInfo.bomb?'БОМБА ЗАЛОЖЕНА — E: РАЗМИНИРОВАТЬ':'КРАСНЫМ: E У ТОЧКИ — ЗАЛОЖИТЬ БОМБУ',W/2,64);}
+  ctx.restore();
   ctx.textAlign = 'left'; ctx.font = '18px monospace'; ctx.fillStyle = '#fff';
   const wConf = WEAPONS[me.currentWeapon]; ctx.fillText(`ОРУЖИЕ: ${wConf.name}`, 10, H - 45);
   if (me.currentWeapon === 'knife') ctx.fillText('AMMO: ∞ [БЛИЖНИЙ БОЙ]', 10, H - 20);

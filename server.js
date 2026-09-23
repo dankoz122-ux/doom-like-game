@@ -58,6 +58,33 @@ const medkits = [
 
 let rpgWeapon = { id: 'rpg_pickup', x: 7.5, y: 5.5, active: true };
 const players = {};
+// Match rotation: Team Deathmatch (120s) <-> Bomb mode (rounds).
+let modeIndex = 0;
+let match = { mode: 'tdm', phase: 'active', endsAt: Date.now() + 120000, round: 1, roundEndsAt: 0, bomb: null, scores: { red: 0, blue: 0 }, message: 'Командный бой' };
+const SITE = { x: 7.5, y: 7.5 }; // существующая свободная клетка; карта не меняется
+const teamCounts = () => Object.values(players).reduce((a,p)=>(a[p.team]=(a[p.team]||0)+1,a),{red:0,blue:0});
+function assignTeam() { const c=teamCounts(); return (c.red||0) <= (c.blue||0) ? 'red' : 'blue'; }
+function publicMatch() { return { ...match, bomb: match.bomb ? { planted: true, x: match.bomb.x, y: match.bomb.y, explodesAt: match.bomb.explodesAt, defusingBy: match.bomb.defusingBy || null } : null, site: SITE }; }
+function emitMatch() { io.emit('matchState', publicMatch()); }
+function aliveTeamCount(team) { return Object.values(players).filter(p=>p.alive && p.team===team).length; }
+function finishRound(winner, reason) {
+  if (match.phase !== 'active') return;
+  match.phase='intermission'; match.message=reason; if(winner) match.scores[winner]++;
+  match.bomb=null; match.roundEndsAt=Date.now()+7000; emitMatch();
+  io.emit('roundResult',{winner,reason,scores:match.scores});
+}
+function startRound() {
+  match.phase='active'; match.roundEndsAt=0; match.bomb=null; match.message='Раунд '+match.round;
+  for (const p of Object.values(players)) { p.alive=true; p.health=100; const sp=randomSpawn(); p.x=sp.x; p.y=sp.y; }
+  io.emit('roundReset', players); emitMatch();
+}
+function startNextMode() {
+  modeIndex=(modeIndex+1)%2; match.mode=modeIndex===0?'tdm':'bomb'; match.phase='active'; match.round=1;
+  match.endsAt=Date.now()+(match.mode==='tdm'?120000:300000); match.roundEndsAt=0; match.bomb=null; match.scores={red:0,blue:0};
+  Object.values(players).forEach((p,i)=>{p.team=i%2===0?'red':'blue'; p.alive=true;p.health=100;const sp=randomSpawn();p.x=sp.x;p.y=sp.y;});
+  match.message=match.mode==='bomb'?'Закладка бомбы':'Командный бой'; io.emit('roundReset',players); emitMatch();
+}
+
 
 function randomSpawn() {
   return SPAWNS[Math.floor(Math.random() * SPAWNS.length)];
@@ -67,14 +94,23 @@ io.on('connection', (socket) => {
   const spawn = randomSpawn();
   players[socket.id] = {
     id: socket.id, x: spawn.x, y: spawn.y, angle: 0,
-    health: 100, kills: 0, deaths: 0,
+    health: 100, kills: 0, deaths: 0, team: assignTeam(),
     name: 'Player' + socket.id.slice(0, 4), alive: true
   };
 
-  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits, rpgWeapon });
+  socket.emit('init', { id: socket.id, map: MAP, players, ammoBoxes, medkits, rpgWeapon, match: publicMatch() });
   socket.broadcast.emit('playerJoined', players[socket.id]);
   console.log('Игрок подключился:', socket.id);
 
+  socket.on('bombAction', (action) => {
+    const p=players[socket.id]; if(!p||!p.alive||match.mode!=='bomb'||match.phase!=='active') return;
+    const near=(x,y)=>Math.hypot(p.x-x,p.y-y)<1.35;
+    if(action==='plant' && p.team==='red' && !match.bomb && near(SITE.x,SITE.y)) {
+      match.bomb={x:SITE.x,y:SITE.y,explodesAt:Date.now()+35000,defusingBy:null}; match.message='Бомба заложена!'; emitMatch();
+    } else if(action==='defuse' && p.team==='blue' && match.bomb && near(match.bomb.x,match.bomb.y)) {
+      finishRound('blue','Бомба разминирована!');
+    }
+  });
   socket.on('setName', (name) => {
     if (players[socket.id]) {
       const clean = String(name || '').slice(0, 16).trim();
@@ -137,6 +173,8 @@ io.on('connection', (socket) => {
             target.alive = false; target.deaths++; 
             if (target.id !== shooter.id) shooter.kills++;
             io.emit('death', { targetId: target.id, byId: socket.id, killerName: shooter.name });
+        if(match.mode==='bomb' && match.phase==='active') { if(aliveTeamCount('red')===0) finishRound('blue','Команда атакующих уничтожена'); else if(aliveTeamCount('blue')===0) finishRound('red','Команда защитников уничтожена'); }
+        else if(match.mode==='tdm' && match.phase==='active' && aliveTeamCount(target.team)===0) { match.scores[shooter.team]=(match.scores[shooter.team]||0)+1; emitMatch(); }
 
             setTimeout(() => {
               if (!players[target.id]) return;
@@ -157,6 +195,8 @@ io.on('connection', (socket) => {
       if (target.health <= 0) {
         target.alive = false; target.deaths++; shooter.kills++;
         io.emit('death', { targetId: target.id, byId: socket.id, killerName: shooter.name });
+        if(match.mode==='bomb' && match.phase==='active') { if(aliveTeamCount('red')===0) finishRound('blue','Команда атакующих уничтожена'); else if(aliveTeamCount('blue')===0) finishRound('red','Команда защитников уничтожена'); }
+        else if(match.mode==='tdm' && match.phase==='active' && aliveTeamCount(target.team)===0) { match.scores[shooter.team]=(match.scores[shooter.team]||0)+1; emitMatch(); }
 
         setTimeout(() => {
           if (!players[target.id]) return;
@@ -174,7 +214,21 @@ io.on('connection', (socket) => {
   });
 });
 
-setInterval(() => { io.emit('state', players); }, 50);
+setInterval(() => {
+  const now=Date.now();
+  if(match.mode==='bomb' && match.phase==='active') {
+    if(match.bomb && now>=match.bomb.explodesAt) finishRound('red','Бомба взорвалась!');
+    else if(!match.bomb && now>=match.endsAt) finishRound('blue','Время атаки вышло');
+  }
+  if(match.phase==='intermission' && now>=match.roundEndsAt) {
+    if(match.mode==='bomb' && match.round<6) { match.round++; // swap sides after 3 rounds
+      startRound();
+    } else startNextMode();
+  }
+  if(match.mode==='tdm' && match.phase==='active' && now>=match.endsAt) startNextMode();
+  io.emit('state', players); 
+}, 50);
+setInterval(()=>{ if(match.mode==='bomb' && match.phase==='active' && match.bomb) emitMatch(); },1000);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log('Сервер запущен на порту ' + PORT));
